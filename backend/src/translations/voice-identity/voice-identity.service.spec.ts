@@ -25,6 +25,12 @@ function buildProfile(overrides: Partial<Profile> = {}): Profile {
   };
 }
 
+// Signature WAV réelle minimale ("RIFF"...."WAVE") — depuis l'audit de
+// sécurité, VoiceIdentityService vérifie les octets du fichier en plus du
+// Content-Type déclaré (voir file-signature.util.ts), un buffer de
+// remplissage seul ne suffit donc plus à passer la validation.
+const WAV_SIGNATURE = Buffer.from('RIFF\0\0\0\0WAVE', 'latin1');
+
 function buildSample(): Express.Multer.File {
   return {
     fieldname: 'sample',
@@ -32,7 +38,7 @@ function buildSample(): Express.Multer.File {
     encoding: '7bit',
     mimetype: 'audio/wav',
     size: 2000,
-    buffer: Buffer.alloc(2000, 1),
+    buffer: Buffer.concat([WAV_SIGNATURE, Buffer.alloc(2000 - WAV_SIGNATURE.length, 1)]),
     destination: '',
     filename: '',
     path: '',

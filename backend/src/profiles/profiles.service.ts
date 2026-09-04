@@ -7,6 +7,7 @@ import {
   IMAGE_EXTENSION_TO_MIME_TYPE,
   MAX_IMAGE_SIZE_BYTES,
 } from '../uploads/media-upload.constants';
+import { matchesFileSignature } from '../uploads/file-signature.util';
 import { StorageService } from '../uploads/storage.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 
@@ -59,6 +60,14 @@ export class ProfilesService {
     if (!extension) {
       throw new BadRequestException(
         `Format d'image non supporté : "${file.mimetype}". Formats acceptés : ${Object.keys(ALLOWED_IMAGE_MIME_TYPES).join(', ')}.`,
+      );
+    }
+    // Le Content-Type d'un formulaire multipart est choisi par le client et
+    // ne garantit rien sur le contenu réel du fichier (audit de sécurité) —
+    // on vérifie les octets de signature avant d'aller plus loin.
+    if (!matchesFileSignature(file.buffer, file.mimetype)) {
+      throw new BadRequestException(
+        `Le contenu du fichier ne correspond pas au format déclaré ("${file.mimetype}").`,
       );
     }
     if (file.size > MAX_IMAGE_SIZE_BYTES) {

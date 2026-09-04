@@ -15,6 +15,7 @@ import {
   MAX_IMAGE_SIZE_BYTES,
   MAX_VIDEO_SIZE_BYTES,
 } from '../uploads/media-upload.constants';
+import { matchesFileSignature } from '../uploads/file-signature.util';
 import { StorageService } from '../uploads/storage.service';
 import { ContactsService } from '../contacts/contacts.service';
 import { CreateStatusDto } from './dto/create-status.dto';
@@ -274,6 +275,14 @@ export class StatusesService {
     if (!extension) {
       throw new BadRequestException(
         `Format non supporté pour un statut ${type} : "${file.mimetype}". Formats acceptés : ${Object.keys(rules.mimeTypes).join(', ')}.`,
+      );
+    }
+    // Le Content-Type d'un formulaire multipart est choisi par le client et
+    // ne garantit rien sur le contenu réel du fichier (audit de sécurité) —
+    // on vérifie les octets de signature avant d'aller plus loin.
+    if (!matchesFileSignature(file.buffer, file.mimetype)) {
+      throw new BadRequestException(
+        `Le contenu du fichier ne correspond pas au format déclaré ("${file.mimetype}").`,
       );
     }
     if (file.size > rules.maxSizeBytes) {

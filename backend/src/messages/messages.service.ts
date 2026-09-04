@@ -17,6 +17,7 @@ import {
   MAX_MEDIA_ALBUM_ITEMS,
   MAX_VIDEO_SIZE_BYTES,
 } from '../uploads/media-upload.constants';
+import { matchesFileSignature } from '../uploads/file-signature.util';
 import { StorageService } from '../uploads/storage.service';
 import { EventsGateway } from '../websocket/events.gateway';
 import { CreateMessageDto } from './dto/create-message.dto';
@@ -220,6 +221,14 @@ export class MessagesService {
         `Format d'image non supporté : "${file.mimetype}". Formats acceptés : ${Object.keys(ALLOWED_IMAGE_MIME_TYPES).join(', ')}.`,
       );
     }
+    // Le Content-Type d'un formulaire multipart est choisi par le client et
+    // ne garantit rien sur le contenu réel du fichier (audit de sécurité) —
+    // on vérifie les octets de signature avant d'aller plus loin.
+    if (!matchesFileSignature(file.buffer, file.mimetype)) {
+      throw new BadRequestException(
+        `Le contenu du fichier ne correspond pas au format déclaré ("${file.mimetype}").`,
+      );
+    }
     if (file.size > MAX_IMAGE_SIZE_BYTES) {
       throw new BadRequestException(
         `L'image est trop volumineuse (${(file.size / (1024 * 1024)).toFixed(1)} Mo, maximum ${
@@ -326,6 +335,13 @@ export class MessagesService {
             ...Object.keys(ALLOWED_IMAGE_MIME_TYPES),
             ...Object.keys(ALLOWED_VIDEO_MIME_TYPES),
           ].join(', ')}.`,
+        );
+      }
+      // Voir sendImage ci-dessus : le Content-Type déclaré ne garantit rien
+      // sur le contenu réel du fichier.
+      if (!matchesFileSignature(file.buffer, file.mimetype)) {
+        throw new BadRequestException(
+          `"${file.originalname}" : le contenu du fichier ne correspond pas au format déclaré ("${file.mimetype}").`,
         );
       }
       const maxSize = isVideo ? MAX_VIDEO_SIZE_BYTES : MAX_IMAGE_SIZE_BYTES;

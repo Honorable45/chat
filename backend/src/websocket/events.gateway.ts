@@ -14,6 +14,7 @@ import {
 import type { DefaultEventsMap, Server, Socket } from 'socket.io';
 import { PresenceService } from '../presence/presence.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { SocketRateLimiter } from './socket-rate-limiter';
 import { verifySocketUserId } from './socket-auth.util';
 
 interface TypingPayload {
@@ -49,8 +50,12 @@ type AppSocket = Socket<DefaultEventsMap, DefaultEventsMap, DefaultEventsMap, So
  * frappe en dev/prod (masqué en tests e2e par DISABLE_RATE_LIMITING — voir
  * PHASES.md, bug trouvé en testant l'interface en conditions réelles). Le
  * gateway a de toute façon son propre contrôle d'accès réel (appartenance à
- * la conversation vérifiée en base, voir relayToOtherMembers ci-dessous) —
- * cette exclusion ne retire aucune protection existante.
+ * la conversation vérifiée en base, voir relayToOtherMembers ci-dessous).
+ * Ceci retirait bien une protection réelle (débit) sans remplacement — un
+ * trou comblé depuis par SocketRateLimiter (voir typingLimiter/presenceLimiter
+ * ci-dessous, audit de sécurité) : le ThrottlerGuard HTTP ne peut pas
+ * fonctionner ici, mais l'absence de toute limite sur ces événements n'était
+ * pas un choix délibéré.
  */
 @Injectable()
 @SkipThrottle()
@@ -65,6 +70,15 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   server!: Server;
 
   private readonly logger = new Logger(EventsGateway.name);
+
+  // Voir socket-rate-limiter.ts : ThrottlerGuard (HTTP) est désactivé sur ce
+  // gateway (@SkipThrottle() ci-dessus) et ne protégeait donc plus du tout
+  // ces événements (audit de sécurité). "typing" touche la base à chaque
+  // appel (relayToOtherMembers) : limite serrée. "presence" reste en mémoire
+  // (PresenceService.setOpenConversation) mais garde tout de même une garde,
+  // par cohérence et pour borner le CPU en cas de boucle cliente.
+  private readonly typingLimiter = new SocketRateLimiter(20, 10_000);
+  private readonly presenceLimiter = new SocketRateLimiter(60, 10_000);
 
   constructor(
     private readonly jwt: JwtService,
@@ -106,6 +120,9 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   async handleDisconnect(client: AppSocket): Promise<void> {
+    this.typingLimiter.clear(client.id);
+    this.presenceLimiter.clear(client.id);
+
     const userId = client.data.userId;
     if (!userId) return; // jamais authentifié (rejeté dans handleConnection)
 
@@ -125,6 +142,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: AppSocket,
     @MessageBody() body: TypingPayload,
   ): Promise<void> {
+    if (!this.typingLimiter.consume(client.id)) return;
     await this.relayToOtherMembers(client, body, 'message:typing');
   }
 
@@ -133,6 +151,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: AppSocket,
     @MessageBody() body: TypingPayload,
   ): Promise<void> {
+    if (!this.typingLimiter.consume(client.id)) return;
     await this.relayToOtherMembers(client, body, 'message:stop_typing');
   }
 
@@ -153,12 +172,14 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() body: ConversationOpenedPayload,
   ): void {
     if (!client.data.userId || !body?.conversationId) return;
+    if (!this.presenceLimiter.consume(client.id)) return;
     this.presence.setOpenConversation(client.id, body.conversationId);
   }
 
   @SubscribeMessage('conversation:closed')
   handleConversationClosed(@ConnectedSocket() client: AppSocket): void {
     if (!client.data.userId) return;
+    if (!this.presenceLimiter.consume(client.id)) return;
     this.presence.setOpenConversation(client.id, null);
   }
 

@@ -25,14 +25,25 @@ function buildMessage(overrides: Partial<Message> = {}): Message {
   };
 }
 
+// Signature réelle minimale par type MIME — depuis l'audit de sécurité,
+// MessagesService vérifie les octets du fichier en plus du Content-Type
+// déclaré (voir file-signature.util.ts), un buffer de remplissage seul ne
+// suffit donc plus à passer la validation.
+const FILE_SIGNATURES: Readonly<Record<string, number[]>> = {
+  'image/jpeg': [0xff, 0xd8, 0xff],
+  'video/mp4': [0, 0, 0, 0, 0x66, 0x74, 0x79, 0x70], // "....ftyp"
+};
+
 function buildImageFile(overrides: Partial<Express.Multer.File> = {}): Express.Multer.File {
+  const mimetype = overrides.mimetype ?? 'image/jpeg';
+  const signature = FILE_SIGNATURES[mimetype] ?? [];
   return {
     fieldname: 'image',
     originalname: 'photo.jpg',
     encoding: '7bit',
     mimetype: 'image/jpeg',
     size: 2000,
-    buffer: Buffer.alloc(2000, 1),
+    buffer: Buffer.concat([Buffer.from(signature), Buffer.alloc(2000 - signature.length, 1)]),
     destination: '',
     filename: '',
     path: '',

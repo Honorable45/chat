@@ -38,7 +38,14 @@ describe('Avatar (e2e)', () => {
     const upload = await request(app.getHttpServer())
       .post('/api/users/me/avatar')
       .set('Authorization', `Bearer ${alice.accessToken}`)
-      .attach('avatar', Buffer.alloc(200, 5), { filename: 'photo.jpg', contentType: 'image/jpeg' })
+      .attach(
+        'avatar',
+        // Signature JPEG réelle (0xFF 0xD8 0xFF) : depuis l'audit de
+        // sécurité, ProfilesService vérifie les octets du fichier en plus
+        // du Content-Type déclaré (voir file-signature.util.ts).
+        Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(197, 5)]),
+        { filename: 'photo.jpg', contentType: 'image/jpeg' },
+      )
       .expect(201);
     expect(upload.body.avatarStorageKey).toBeTruthy();
 

@@ -5,6 +5,12 @@ import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../uploads/storage.service';
 import { StatusesService } from './statuses.service';
 
+// Signature JPEG réelle minimale — depuis l'audit de sécurité,
+// StatusesService vérifie les octets du fichier en plus du Content-Type
+// déclaré (voir file-signature.util.ts), un buffer de remplissage seul ne
+// suffit donc plus à passer la validation.
+const JPEG_SIGNATURE = Buffer.from([0xff, 0xd8, 0xff]);
+
 function buildFile(overrides: Partial<Express.Multer.File> = {}): Express.Multer.File {
   return {
     fieldname: 'media',
@@ -12,7 +18,7 @@ function buildFile(overrides: Partial<Express.Multer.File> = {}): Express.Multer
     encoding: '7bit',
     mimetype: 'image/jpeg',
     size: 1000,
-    buffer: Buffer.alloc(1000, 1),
+    buffer: Buffer.concat([JPEG_SIGNATURE, Buffer.alloc(1000 - JPEG_SIGNATURE.length, 1)]),
     destination: '',
     filename: '',
     path: '',

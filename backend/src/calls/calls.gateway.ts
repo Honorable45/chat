@@ -12,6 +12,7 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import type { DefaultEventsMap, Server, Socket } from 'socket.io';
+import { SocketRateLimiter } from '../websocket/socket-rate-limiter';
 import { verifySocketUserId } from '../websocket/socket-auth.util';
 import { CallMessageDto, CallsService } from './calls.service';
 
@@ -53,6 +54,12 @@ type AckResult<T extends object> = ({ ok: true } & T) | { ok: false; error: stri
  * les changements d'état (accepté/refusé/raccroché/terminé) — jamais le
  * flux audio lui-même, qui passe en pair-à-pair (WebRTC) une fois la
  * connexion établie.
+ *
+ * @SkipThrottle() : ThrottlerGuard (HTTP) ne peut pas fonctionner dans un
+ * contexte WebSocket (voir le commentaire équivalent sur EventsGateway) —
+ * ceci retirait toute limite de débit sur la signalisation d'appel sans
+ * remplacement. Comblé par SocketRateLimiter (voir actionLimiter/
+ * signalLimiter ci-dessous, audit de sécurité).
  */
 @Injectable()
 @SkipThrottle()
@@ -68,6 +75,14 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   server!: Server;
 
   private readonly logger = new Logger(CallsGateway.name);
+
+  // "action" (invite/accept/reject/cancel/end) écrit en base à chaque appel :
+  // limite serrée, ces actions restent naturellement rares (une par decision
+  // humaine). "signal" (offre/réponse SDP, candidats ICE) peut légitimement
+  // rafaler en tout début d'appel (trickle ICE) : limite bien plus large
+  // pour ne jamais gêner un appel réel, seulement une boucle/un abus net.
+  private readonly actionLimiter = new SocketRateLimiter(20, 10_000);
+  private readonly signalLimiter = new SocketRateLimiter(300, 10_000);
 
   constructor(
     private readonly jwt: JwtService,
@@ -93,6 +108,9 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
    * participant resterait bloqué en sonnerie ou en appel indéfiniment.
    */
   async handleDisconnect(client: AppSocket): Promise<void> {
+    this.actionLimiter.clear(client.id);
+    this.signalLimiter.clear(client.id);
+
     const userId = client.data.userId;
     if (!userId) return;
 
@@ -122,6 +140,7 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ): Promise<AckResult<{ busy: true } | { busy: false; callMessage: CallMessageDto }>> {
     const userId = client.data.userId;
     if (!userId) return { ok: false, error: 'Non authentifié.' };
+    if (!this.actionLimiter.consume(client.id)) return this.rateLimited();
     try {
       const type = body.type === 'VIDEO' ? 'VIDEO' : 'AUDIO';
       const result = await this.calls.invite(userId, body.conversationId, body.calleeId, type);
@@ -140,6 +159,7 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ): Promise<AckResult<{ callMessage: CallMessageDto }>> {
     const userId = client.data.userId;
     if (!userId) return { ok: false, error: 'Non authentifié.' };
+    if (!this.actionLimiter.consume(client.id)) return this.rateLimited();
     try {
       const result = await this.calls.accept(userId, body.callId);
       this.server.to(this.userRoom(result.call.callerId)).emit('call:accepted', result);
@@ -164,6 +184,7 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ): Promise<AckResult<{ callMessage: CallMessageDto }>> {
     const userId = client.data.userId;
     if (!userId) return { ok: false, error: 'Non authentifié.' };
+    if (!this.actionLimiter.consume(client.id)) return this.rateLimited();
     try {
       const result = await this.calls.reject(userId, body.callId);
       this.server.to(this.userRoom(result.call.callerId)).emit('call:rejected', result);
@@ -183,6 +204,7 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ): Promise<AckResult<{ callMessage: CallMessageDto }>> {
     const userId = client.data.userId;
     if (!userId) return { ok: false, error: 'Non authentifié.' };
+    if (!this.actionLimiter.consume(client.id)) return this.rateLimited();
     try {
       const result = await this.calls.cancel(userId, body.callId);
       this.server.to(this.userRoom(result.call.calleeId)).emit('call:cancelled', result);
@@ -199,6 +221,7 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ): Promise<AckResult<{ callMessage: CallMessageDto }>> {
     const userId = client.data.userId;
     if (!userId) return { ok: false, error: 'Non authentifié.' };
+    if (!this.actionLimiter.consume(client.id)) return this.rateLimited();
     try {
       const result = await this.calls.end(userId, body.callId);
       const otherUserId =
@@ -253,6 +276,7 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private async relaySignal(client: AppSocket, body: SignalPayload, event: string): Promise<void> {
     const userId = client.data.userId;
     if (!userId || !body?.callId) return;
+    if (!this.signalLimiter.consume(client.id)) return;
 
     const participants = await this.calls.getParticipants(body.callId);
     if (!participants) return;
@@ -282,5 +306,9 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   private userRoom(userId: string): string {
     return `user:${userId}`;
+  }
+
+  private rateLimited(): { ok: false; error: string } {
+    return { ok: false, error: 'Trop de requêtes, réessayez dans quelques secondes.' };
   }
 }

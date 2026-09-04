@@ -1997,14 +1997,82 @@ Frontend : `tsc --noEmit`, `next build`, `eslint` (0 erreur) ; vérification
 en direct par navigateur (Puppeteer) pour la limite de débit, la galerie
 de médias, le thème, l'appel vidéo et la recherche dans une conversation.
 
+## Audit de sécurité : validation réelle des fichiers et débit WebSocket
+
+Audit dédié (pas un nouvel item NEXORA), suivi de la correction des deux
+constats les plus impactants.
+
+- **Validation du contenu réel des fichiers uploadés** : `file.mimetype`
+  (Multer) vient du Content-Type déclaré par le client dans le formulaire
+  multipart — entièrement falsifiable, jamais une garantie sur le contenu
+  réel. Les 6 points d'entrée qui acceptaient un fichier (messages image/
+  média, statuts, avatar, vocal, échantillon de clonage vocal) ne
+  vérifiaient que ce champ contre une liste blanche, jamais le contenu
+  lui-même. Ajout de `file-signature.util.ts` : reconnaissance des octets
+  de signature ("magic bytes") pour chaque format accepté (JPEG/PNG/WebP/
+  GIF, MP4/WebM/QuickTime, WebM/Ogg/MP4/MP3/WAV) — pas de dépendance
+  dédiée, la liste de formats acceptés est fermée et courte. Un fichier
+  dont le contenu ne correspond pas au type déclaré est maintenant rejeté
+  (400) avant tout enregistrement, aux 6 points d'entrée.
+- **Aucune limite de débit sur les événements WebSocket** : `@SkipThrottle()`
+  avait été posé sur les deux gateways pour corriger un crash
+  (`res.header is not a function`, ThrottlerGuard incompatible avec le
+  contexte WebSocket — voir plus haut), sans mécanisme de remplacement :
+  un compte authentifié pouvait spammer `message:typing` ou la
+  signalisation d'appel sans aucune retenue. Ajout de
+  `SocketRateLimiter` (fenêtre glissante par socket, en mémoire) :
+  20/10s pour les indicateurs de frappe et les actions d'appel
+  (invitation/acceptation/refus/annulation/fin, qui écrivent en base),
+  300/10s pour la signalisation WebRTC (offre/réponse/candidats ICE, qui
+  peut légitimement rafaler en début d'appel — trickle ICE), 60/10s pour
+  la déclaration de conversation ouverte/fermée (en mémoire, coût
+  moindre mais gardée par cohérence). Le quota est propre à chaque
+  socket et nettoyé à la déconnexion.
+
+Vérifié : 12 nouveaux tests unitaires pour `matchesFileSignature` (accepte
+chaque format réel, refuse un contenu qui ne correspond pas au type
+déclaré, refuse un buffer trop court ou un type inconnu de la fonction),
+4 nouveaux tests unitaires pour `SocketRateLimiter` (limite atteinte,
+comptage indépendant par clé, fenêtre glissante qui se libère, `clear()`).
+2 nouveaux tests e2e confirmant qu'un contenu falsifié est bien rejeté
+(image et vocal). 2 nouveaux tests e2e par vraie connexion WebSocket
+confirmant qu'un excédent de `message:typing` et de `call:invite` est
+bien absorbé plutôt que relayé/traité sans borne. Tous les fixtures de
+test existantes utilisant un buffer de remplissage arbitraire (jpeg/wav)
+ont dû être corrigées avec une signature réelle minimale pour continuer à
+passer la nouvelle validation — une correction attendue, pas un
+contournement. Vérifié en direct contre le serveur de dev réel : un
+upload déclarant "image/jpeg" avec un contenu `<script>...</script>` est
+refusé (400, message explicite), une vraie image JPEG passe normalement
+(201). 273 tests unitaires et 72 tests e2e au total, tous verts.
+
+### Vérifications effectuées
+
+Backend : `tsc`, `eslint` (0 erreur), 273 tests unitaires, 72 tests e2e,
+vérification en direct contre le serveur de dev (upload réel vs falsifié).
+Aucun changement frontend nécessaire (les deux failles étaient purement
+côté serveur).
+
+### Reste noté, hors de cette passe
+
+Constats plus faibles de l'audit non corrigés ici (impact jugé moindre,
+nécessitent des compromis à discuter plutôt qu'une correction mécanique) :
+Swagger exposé sans authentification en toute circonstance, jetons JWT en
+localStorage côté frontend plutôt qu'en cookie httpOnly, absence d'en-tête
+anti-clickjacking côté frontend, un access token reste valide jusqu'à son
+expiration naturelle même après déconnexion/changement de mot de passe,
+coût de `resetPassword` qui grandit avec le nombre de tokens actifs.
+
 ## Prochaine étape
 
-Les 8 items de la spécification NEXORA sont posés et vérifiés, ainsi
-qu'une passe de stabilisation post-spécification (ci-dessus). Hors
-périmètre, resté noté au fil de l'eau : mise à niveau ElevenLabs pour
-activer réellement la synthèse vocale traduite ; nouvelle tentative de
+Les 8 items de la spécification NEXORA sont posés et vérifiés, une passe
+de stabilisation post-spécification, et un audit de sécurité avec
+correction des deux constats prioritaires (ci-dessus). Hors périmètre,
+resté noté au fil de l'eau : mise à niveau ElevenLabs pour activer
+réellement la synthèse vocale traduite ; nouvelle tentative de
 vérification live par navigateur pour la propagation de lecture
 multi-appareils (item 7) si l'environnement de test se stabilise (la
 logique serveur, elle, est prouvée par de vrais tests e2e par sockets) ;
 périmètre de "Discussions vocales" (rooms vocales) jamais défini, resté
-hors de "l'essentiel" pour cette passe.
+hors de "l'essentiel" pour cette passe ; constats faibles de l'audit de
+sécurité listés ci-dessus.

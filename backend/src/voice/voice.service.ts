@@ -18,6 +18,7 @@ import {
   EXTENSION_TO_MIME_TYPE,
   MAX_AUDIO_SIZE_BYTES,
 } from '../uploads/audio-upload.constants';
+import { matchesFileSignature } from '../uploads/file-signature.util';
 import { StorageService } from '../uploads/storage.service';
 import { EventsGateway } from '../websocket/events.gateway';
 import { CreateVoiceMessageDto } from './dto/create-voice-message.dto';
@@ -115,6 +116,14 @@ export class VoiceService {
     if (!extension) {
       throw new BadRequestException(
         `Format audio non supporté : "${file.mimetype}". Formats acceptés : ${Object.keys(ALLOWED_AUDIO_MIME_TYPES).join(', ')}.`,
+      );
+    }
+    // Le Content-Type d'un formulaire multipart est choisi par le client et
+    // ne garantit rien sur le contenu réel du fichier (audit de sécurité) —
+    // on vérifie les octets de signature avant d'aller plus loin.
+    if (!matchesFileSignature(file.buffer, file.mimetype)) {
+      throw new BadRequestException(
+        `Le contenu du fichier ne correspond pas au format déclaré ("${file.mimetype}").`,
       );
     }
     if (file.size > MAX_AUDIO_SIZE_BYTES) {

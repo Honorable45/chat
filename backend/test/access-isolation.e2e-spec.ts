@@ -137,7 +137,14 @@ describe('Isolation entre utilisateurs (e2e)', () => {
         .set('Authorization', `Bearer ${a.accessToken}`)
         .field('conversationId', conversationId)
         .field('durationSeconds', '5')
-        .attach('audio', Buffer.alloc(500, 7), { filename: 'voice.wav', contentType: 'audio/wav' })
+        .attach(
+          'audio',
+          // Signature WAV réelle ("RIFF"...."WAVE") : depuis l'audit de
+          // sécurité, VoiceService vérifie les octets du fichier en plus du
+          // Content-Type déclaré (voir file-signature.util.ts).
+          Buffer.concat([Buffer.from('RIFF\0\0\0\0WAVE', 'latin1'), Buffer.alloc(488, 7)]),
+          { filename: 'voice.wav', contentType: 'audio/wav' },
+        )
         .expect(201);
       voiceMessageId = res.body.id as string;
     });
@@ -173,7 +180,14 @@ describe('Isolation entre utilisateurs (e2e)', () => {
         .post('/api/messages/image')
         .set('Authorization', `Bearer ${a.accessToken}`)
         .field('conversationId', conversationId)
-        .attach('image', Buffer.alloc(500, 3), { filename: 'photo.jpg', contentType: 'image/jpeg' })
+        .attach(
+          'image',
+          // Signature JPEG réelle (0xFF 0xD8 0xFF) : depuis l'audit de
+          // sécurité, MessagesService vérifie les octets du fichier en plus
+          // du Content-Type déclaré (voir file-signature.util.ts).
+          Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(497, 3)]),
+          { filename: 'photo.jpg', contentType: 'image/jpeg' },
+        )
         .expect(201);
       imageMessageId = res.body.id as string;
       attachmentId = res.body.attachments[0].id as string;
@@ -229,6 +243,37 @@ describe('Isolation entre utilisateurs (e2e)', () => {
 
       // Une seule pièce jointe existe à ce stade : jamais de page suivante.
       expect(firstPage.body.nextCursor).toBeNull();
+    });
+  });
+
+  describe('Validation du contenu réel des fichiers (audit de sécurité)', () => {
+    it('refuse une image dont le Content-Type déclaré ne correspond pas au contenu réel', async () => {
+      // Le champ mimetype d'un formulaire multipart est choisi par le client
+      // et falsifiable à volonté — un contenu HTML/texte quelconque déclaré
+      // "image/jpeg" doit être rejeté, jamais accepté au seul vu de
+      // l'en-tête (voir MessagesService.sendImage / file-signature.util.ts).
+      await request(app.getHttpServer())
+        .post('/api/messages/image')
+        .set('Authorization', `Bearer ${a.accessToken}`)
+        .field('conversationId', conversationId)
+        .attach('image', Buffer.from('<script>alert(1)</script>'), {
+          filename: 'photo.jpg',
+          contentType: 'image/jpeg',
+        })
+        .expect(400);
+    });
+
+    it('refuse un vocal dont le Content-Type déclaré ne correspond pas au contenu réel', async () => {
+      await request(app.getHttpServer())
+        .post('/api/voice/messages')
+        .set('Authorization', `Bearer ${a.accessToken}`)
+        .field('conversationId', conversationId)
+        .field('durationSeconds', '5')
+        .attach('audio', Buffer.from('ceci ne ressemble à aucun format audio réel'), {
+          filename: 'voice.wav',
+          contentType: 'audio/wav',
+        })
+        .expect(400);
     });
   });
 
