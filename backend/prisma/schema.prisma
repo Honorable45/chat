@@ -1,0 +1,611 @@
+// Glotta — schéma de données
+// Voir section 24 du cahier des charges pour la liste des modèles attendus.
+// Les relations sont volontairement explicites (clés étrangères nommées) pour
+// que le contrôle d'accès backend (section 23) reste simple à auditer :
+// aucune requête ne doit pouvoir renvoyer les données d'un autre utilisateur
+// en changeant simplement un ID.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Prisma 7 : l'URL de connexion ne vit plus ici mais dans prisma.config.ts
+// (CLI/migrations) et est passée explicitement au driver adapter dans
+// PrismaService (runtime). Voir https://pris.ly/d/config-datasource
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Comptes & authentification
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String  @id @default(cuid())
+  username     String  @unique
+  email        String? @unique
+  phone        String? @unique
+  passwordHash String
+
+  firstName String
+  lastName  String
+
+  profile Profile?
+
+  primaryLanguageId String?
+  primaryLanguage   Language? @relation("UserPrimaryLanguage", fields: [primaryLanguageId], references: [id])
+
+  preferredReceiveLanguageId String?
+  preferredReceiveLanguage   Language? @relation("UserPreferredLanguage", fields: [preferredReceiveLanguageId], references: [id])
+
+  spokenLanguages UserSpokenLanguage[]
+
+  conversationMemberships ConversationMember[]
+  sentMessages            Message[]              @relation("MessageSender")
+  messageReads             MessageRead[]
+  reactions                Reaction[]
+  notifications            Notification[]
+  statuses                 Status[]
+  statusViews              StatusView[]
+  sessions                 UserSession[]
+  attachments              Attachment[]
+  passwordResetTokens      PasswordResetToken[]
+  callsMade                Call[]                @relation("CallCaller")
+  callsReceived            Call[]                @relation("CallCallee")
+  contactRequestsSent      ContactRequest[]      @relation("ContactRequestRequester")
+  contactRequestsReceived  ContactRequest[]      @relation("ContactRequestRecipient")
+  sharedContactCards       SharedContact[]        @relation("SharedContactUser")
+
+  isActive  Boolean  @default(true)
+  // Horodaté à la dernière déconnexion de tous les sockets de l'utilisateur
+  // (voir PresenceService) — le statut "en ligne" lui-même reste en mémoire,
+  // jamais en base (section 6 : dérivé des connexions WebSocket actives).
+  lastSeenAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([username])
+  @@map("users")
+}
+
+model UserSession {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  refreshTokenHash String
+  userAgent        String?
+  ipAddress        String?
+  deviceLabel      String?
+
+  createdAt DateTime  @default(now())
+  lastUsedAt DateTime @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+
+  @@index([userId])
+  @@map("user_sessions")
+}
+
+model PasswordResetToken {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Seul le hash du token est conservé (même logique que les mots de passe et
+  // les refresh tokens) : une fuite de la base ne rend aucun token utilisable.
+  tokenHash String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// Profil
+// ---------------------------------------------------------------------------
+
+model Profile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // URL externe saisie à la main par l'utilisateur (PATCH /users/me/profile).
+  avatarUrl String?
+  // Clé de stockage interne d'un avatar téléversé (POST /users/me/avatar) —
+  // même principe que VoiceMessage.audioStorageKey : jamais un chemin
+  // exposé directement, servi via GET /users/:id/avatar (public, aucune
+  // information sensible). Prioritaire sur avatarUrl quand les deux sont
+  // renseignés — voir resolveAvatarUrl().
+  avatarStorageKey String?
+  statusText String?
+
+  // Consentement explicite pour utiliser la voix de l'utilisateur dans les
+  // traductions vocales adressées à ses correspondants (section 15).
+  voiceCloningConsent   Boolean   @default(false)
+  voiceCloningUpdatedAt DateTime?
+  voiceModelId          String? // référence vers le fournisseur de synthèse vocale, une fois configuré
+
+  showLastSeen    Boolean @default(true)
+  showOnlineStatus Boolean @default(true)
+  showReadReceipts Boolean @default(true)
+  whoCanMessageMe  WhoCanInteract @default(EVERYONE)
+  whoCanSeeMyStatus WhoCanInteract @default(EVERYONE)
+
+  // Interrupteur global (section 11 : "les notifications doivent pouvoir
+  // être activées/désactivées"). Un réglage par catégorie (messages, vocaux,
+  // appels, traductions — section 32) pourra affiner ceci plus tard sans
+  // remettre en cause ce champ.
+  notificationsEnabled Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("profiles")
+}
+
+enum WhoCanInteract {
+  EVERYONE
+  CONTACTS
+  NOBODY
+}
+
+// ---------------------------------------------------------------------------
+// Langues (registre extensible — section 16)
+// ---------------------------------------------------------------------------
+
+model Language {
+  id         String  @id @default(cuid())
+  code       String  @unique // ex: "fr", "en", "ee" (éwé), "kbp" (kabiyè)
+  name       String // nom en français
+  nativeName String // nom dans la langue elle-même
+
+  enabled               Boolean @default(false)
+  speechSupported       Boolean @default(false)
+  translationSupported  Boolean @default(false)
+  voiceSupported        Boolean @default(false)
+
+  usersPrimary    User[]                @relation("UserPrimaryLanguage")
+  usersPreferred  User[]                @relation("UserPreferredLanguage")
+  spokenBy        UserSpokenLanguage[]
+  detectedInVoiceMessages VoiceMessage[]       @relation("VoiceDetectedLanguage")
+  sourceTranslations      MessageTranslation[] @relation("TranslationSourceLanguage")
+  targetTranslations      MessageTranslation[] @relation("TranslationTargetLanguage")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("languages")
+}
+
+model UserSpokenLanguage {
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  languageId String
+  language   Language @relation(fields: [languageId], references: [id], onDelete: Cascade)
+
+  @@id([userId, languageId])
+  @@map("user_spoken_languages")
+}
+
+// ---------------------------------------------------------------------------
+// Conversations
+// ---------------------------------------------------------------------------
+
+model Conversation {
+  id     String           @id @default(cuid())
+  type   ConversationType @default(DIRECT)
+  title  String? // utilisé pour les conversations de groupe (hors MVP)
+
+  members  ConversationMember[]
+  messages Message[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("conversations")
+}
+
+enum ConversationType {
+  DIRECT
+  GROUP
+}
+
+model ConversationMember {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  joinedAt      DateTime  @default(now())
+  lastReadAt    DateTime?
+  isArchived    Boolean   @default(false)
+  isMuted       Boolean   @default(false)
+  leftAt        DateTime?
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+  @@map("conversation_members")
+}
+
+// ---------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         User         @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+
+  type MessageType @default(TEXT)
+  text String? // contenu texte original, si type TEXT ou légende
+
+  replyToId String?
+  replyTo   Message? @relation("MessageReplyTo", fields: [replyToId], references: [id])
+  replies   Message[] @relation("MessageReplyTo")
+
+  voiceMessage VoiceMessage?
+  attachments  Attachment[]
+  reactions    Reaction[]
+  reads        MessageRead[]
+  call         Call?
+  sharedContact SharedContact?
+
+  editedAt  DateTime?
+  deletedAt DateTime?
+
+  sentAt      DateTime  @default(now())
+  deliveredAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([conversationId, createdAt])
+  @@index([senderId])
+  @@map("messages")
+}
+
+enum MessageType {
+  TEXT
+  VOICE
+  IMAGE
+  VIDEO
+  FILE
+  CALL
+  // Un ou plusieurs médias (image/vidéo) envoyés ensemble en une seule
+  // action — voir MessagesService.sendMedia. Remplace IMAGE pour tout
+  // nouvel envoi (même un seul fichier, l'affichage s'adapte côté
+  // frontend) ; IMAGE reste géré en lecture pour les messages déjà
+  // existants envoyés avant cette fonctionnalité.
+  MEDIA_ALBUM
+  // Carte de contact partagée dans une conversation — voir SharedContact.
+  // Uniquement les informations publiques (mêmes champs que PublicUserDto),
+  // jamais l'email/téléphone/préférences privées du contact partagé.
+  CONTACT_SHARE
+}
+
+model MessageRead {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  readAt    DateTime @default(now())
+
+  @@unique([messageId, userId])
+  @@map("message_reads")
+}
+
+model Reaction {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emoji     String
+  createdAt DateTime @default(now())
+
+  @@unique([messageId, userId, emoji])
+  @@map("reactions")
+}
+
+// ---------------------------------------------------------------------------
+// Vocaux & traduction (cœur du produit — sections 13 à 19)
+// ---------------------------------------------------------------------------
+
+model VoiceMessage {
+  id        String  @id @default(cuid())
+  messageId String  @unique
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  // Clé de stockage interne (ex. "voice/<uuid>.webm"), jamais un chemin ou
+  // une URL exposée directement — le client obtient le fichier via
+  // GET /voice/:messageId/audio, qui vérifie l'appartenance à la
+  // conversation avant de le streamer (section 23).
+  audioStorageKey String
+  durationSeconds Int
+  waveform       Json? // liste de niveaux d'amplitude pour l'affichage
+
+  detectedLanguageId String?
+  detectedLanguage   Language? @relation("VoiceDetectedLanguage", fields: [detectedLanguageId], references: [id])
+  languageOverridden  Boolean  @default(false) // vrai si l'utilisateur a corrigé la détection auto
+
+  transcript String? // résultat brut du Speech-to-Text, langue d'origine
+
+  translations MessageTranslation[]
+
+  createdAt DateTime @default(now())
+
+  @@map("voice_messages")
+}
+
+model MessageTranslation {
+  id             String       @id @default(cuid())
+  voiceMessageId String
+  voiceMessage   VoiceMessage @relation(fields: [voiceMessageId], references: [id], onDelete: Cascade)
+
+  sourceLanguageId String
+  sourceLanguage   Language @relation("TranslationSourceLanguage", fields: [sourceLanguageId], references: [id])
+  targetLanguageId String
+  targetLanguage   Language @relation("TranslationTargetLanguage", fields: [targetLanguageId], references: [id])
+
+  translatedText String?
+  // Même principe que VoiceMessage.audioStorageKey : une clé de stockage
+  // interne, jamais un chemin exposé — servie via
+  // GET /voice/:messageId/translations/:languageCode/audio.
+  translatedAudioStorageKey String?
+
+  status TranslationStatus @default(PENDING)
+  usedVoiceCloning Boolean @default(false) // vrai seulement si le consentement de l'expéditeur était actif
+  errorMessage String? // message interne ; jamais renvoyé tel quel au frontend (section 34)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@unique([voiceMessageId, targetLanguageId])
+  @@map("message_translations")
+}
+
+enum TranslationStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// ---------------------------------------------------------------------------
+// Pièces jointes génériques (images, vidéos, fichiers)
+// ---------------------------------------------------------------------------
+
+model Attachment {
+  id        String   @id @default(cuid())
+  messageId String?
+  message   Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  ownerId   String
+  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  url       String
+  mimeType  String
+  sizeBytes Int
+
+  // Champs d'un album multi-médias (type de message MEDIA_ALBUM) — un
+  // message TEXT/IMAGE historique n'en a jamais eu besoin, tous nullables.
+  // `type` a un défaut IMAGE : les lignes existantes (créées avant ce champ,
+  // toutes via l'ancien POST /messages/image) sont forcément des images.
+  type            AttachmentType @default(IMAGE)
+  fileName        String?
+  // Durée/dimensions jamais recalculées côté serveur (pas de ffmpeg/sharp
+  // ici, section 40 : jamais un résultat inventé) — fournies par le client,
+  // qui les lit réellement depuis le fichier avant l'envoi (même principe
+  // déjà établi pour VoiceMessage.durationSeconds). Purement cosmétique
+  // (mise en page de la grille), jamais utilisées pour une décision de
+  // sécurité.
+  durationSeconds Int?
+  width           Int?
+  height          Int?
+  // Ordre d'affichage dans l'album — explicite plutôt que déduit de
+  // `createdAt` (Prisma ne garantit pas l'ordre de renvoi sans `orderBy`).
+  position        Int            @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@map("attachments")
+}
+
+enum AttachmentType {
+  IMAGE
+  VIDEO
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type    NotificationType
+  payload Json // données contextuelles (id de conversation, de message, etc.)
+
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+enum NotificationType {
+  NEW_MESSAGE
+  NEW_VOICE_MESSAGE
+  INCOMING_CALL
+  MISSED_CALL
+  TRANSLATION_COMPLETED
+  CONTACT_REQUEST
+  CONTACT_ACCEPTED
+  REACTION
+}
+
+// ---------------------------------------------------------------------------
+// Appels audio (section 20/32 du cahier des charges — signalisation WebRTC)
+// ---------------------------------------------------------------------------
+
+// Un appel est aussi un message (type CALL) : il apparaît dans le fil de la
+// conversation ("Appel manqué", "Appel · 2:14") et alimente
+// Conversation.lastMessage exactement comme les autres types — voir
+// CallsService. La session de signalisation elle-même (offre/réponse SDP,
+// ICE) transite uniquement par CallsGateway (namespace "/calls"), jamais
+// stockée ici : seul l'aboutissement (accepté, refusé, manqué, terminé,
+// durée) l'est.
+model Call {
+  id        String  @id @default(cuid())
+  messageId String  @unique
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  callerId String
+  caller   User   @relation("CallCaller", fields: [callerId], references: [id], onDelete: Cascade)
+  calleeId String
+  callee   User   @relation("CallCallee", fields: [calleeId], references: [id], onDelete: Cascade)
+
+  type   CallType   @default(AUDIO)
+  status CallStatus @default(RINGING)
+
+  startedAt  DateTime  @default(now())
+  answeredAt DateTime?
+  endedAt    DateTime?
+
+  @@index([calleeId, status])
+  @@index([callerId, status])
+  @@map("calls")
+}
+
+enum CallType {
+  AUDIO
+  VIDEO
+}
+
+enum CallStatus {
+  RINGING
+  ACTIVE
+  // Raccroché par l'appelant (ou expiration côté client) avant toute
+  // réponse — jamais utilisé si l'appelé a explicitement refusé, voir DECLINED.
+  MISSED
+  DECLINED
+  ENDED
+}
+
+// ---------------------------------------------------------------------------
+// Contacts (section 5/2 du cahier des charges NEXORA) — demandes de contact
+// et partage de carte de contact dans une conversation.
+// ---------------------------------------------------------------------------
+
+// Une seule ligne représente la relation entre deux utilisateurs, quel que
+// soit qui a initié la demande — jamais de table `Contact` séparée
+// dupliquant les mêmes deux identifiants une fois la demande acceptée : la
+// relation "être en contact" se déduit directement d'un statut ACCEPTED ici
+// (voir ContactsService, qui interroge toujours dans les deux sens).
+model ContactRequest {
+  id String @id @default(cuid())
+
+  requesterId String
+  requester   User   @relation("ContactRequestRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  recipientId String
+  recipient   User   @relation("ContactRequestRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  status ContactRequestStatus @default(PENDING)
+  // Qui a bloqué qui — n'a de sens que pour status BLOCKED, le blocage
+  // n'étant jamais symétrique contrairement à une demande acceptée.
+  blockedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Une seule relation par paire, quel que soit qui initie une nouvelle
+  // demande après un refus — ContactsService réutilise/relance la ligne
+  // existante plutôt que d'en créer une seconde.
+  @@unique([requesterId, recipientId])
+  @@index([recipientId, status])
+  @@map("contact_requests")
+}
+
+enum ContactRequestStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  BLOCKED
+}
+
+// Carte de contact partagée dans un message (type CONTACT_SHARE) — jamais
+// l'inverse d'une ContactRequest : partager la carte de quelqu'un ne crée
+// aucune relation, seul un clic explicite sur "Ajouter" en crée une (voir
+// ContactsController).
+model SharedContact {
+  id        String  @id @default(cuid())
+  messageId String  @unique
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  sharedUserId String
+  sharedUser   User   @relation("SharedContactUser", fields: [sharedUserId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@map("shared_contacts")
+}
+
+// ---------------------------------------------------------------------------
+// Statuts / stories (section 21)
+// ---------------------------------------------------------------------------
+
+model Status {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type    StatusType
+  text    String?
+  // Même principe que VoiceMessage.audioStorageKey : une clé de stockage
+  // interne, jamais un chemin exposé — servi via GET /statuses/:id/media.
+  mediaStorageKey String?
+
+  visibility StatusVisibility @default(CONTACTS)
+
+  views StatusView[]
+
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([userId])
+  @@map("statuses")
+}
+
+enum StatusType {
+  TEXT
+  IMAGE
+  VIDEO
+  VOICE
+}
+
+enum StatusVisibility {
+  EVERYONE
+  CONTACTS
+  NOBODY
+}
+
+model StatusView {
+  id       String   @id @default(cuid())
+  statusId String
+  status   Status   @relation(fields: [statusId], references: [id], onDelete: Cascade)
+  viewerId String
+  viewer   User     @relation(fields: [viewerId], references: [id], onDelete: Cascade)
+  viewedAt DateTime @default(now())
+
+  @@unique([statusId, viewerId])
+  @@map("status_views")
+}

@@ -14,6 +14,20 @@ Messagerie instantanée multilingue : texte et **vocaux traduits en temps réel*
 
 **Envoi de plusieurs photos/vidéos en un seul album** (`POST /messages/media`, type de message `MEDIA_ALBUM`) : sélection groupée avec aperçu/réordonnancement avant envoi, grille adaptative dans le fil (1 média : rendu classique ; 2 à 4 : mises en page dédiées ; 5+ : grille avec badge "+N"), visionneuse plein écran avec navigation. Première pièce d'une spécification plus large (« NEXORA », 30 sections, comportements type messagerie moderne à reproduire sans copier d'interface ni de code propriétaire) traitée dans l'ordre demandé par l'utilisateur — voir « Spécification NEXORA » dans [`PHASES.md`](./PHASES.md).
 
+**Contacts : demandes, acceptation/refus, blocage et partage de carte** (`/contacts`) : demande de contact avec auto-acceptation quand l'autre partie avait déjà demandé en sens inverse, blocage/déblocage, panneau dédié dans la 2e colonne (recherche, demandes reçues, liste des contacts), et partage de la carte publique d'un utilisateur (avatar/nom/username/langue — jamais email/téléphone) comme message dans une conversation, avec bouton "Ajouter" dont l'état reflète la vraie relation. Deuxième pièce de la spécification NEXORA — voir [`PHASES.md`](./PHASES.md).
+
+**Profil public par lien et QR code, avec scanner caméra réel** : onglet "Partager" dans les Paramètres (lien + QR généré côté client, copie, Web Share API), page `/profile/[userId]` (le bouton reflète la vraie relation de contact), page `/scan` qui décode un QR par la caméra en temps réel (`jsqr`) ou accepte un lien collé en repli — jamais de mot de passe ni de token de session dans le QR, et totalement indépendant de tout flux de connexion. Troisième pièce de la spécification NEXORA — voir [`PHASES.md`](./PHASES.md).
+
+**Notifications jamais redondantes pour une conversation déjà ouverte** : le frontend déclare au backend (`conversation:opened`/`closed`) quelle conversation est réellement à l'écran ; `NotificationsService` ne crée plus de notification "nouveau message" pour un destinataire qui la regarde déjà sur au moins un de ses appareils, sans jamais toucher à la diffusion temps réel du message lui-même ni aux notifications d'appel (sonnerie indépendante de l'écran affiché). Quatrième pièce de la spécification NEXORA — voir [`PHASES.md`](./PHASES.md).
+
+**Deux sonneries d'appel distinctes (ringback/ringtone) et rappel d'un appel manqué** : sons entièrement synthétisés côté client (oscillateurs Web Audio, aucun fichier audio existant ni ressource protégée), motif différent selon qu'on attend une réponse ou qu'on reçoit l'appel ; bouton "Rappeler" sur toute bulle d'appel manqué. Cinquième et sixième pièces de la spécification NEXORA — voir [`PHASES.md`](./PHASES.md).
+
+**Synchronisation multi-appareils** : un appel accepté/refusé sur un appareil arrête de sonner sur les autres appareils connectés du même compte (`call:resolved-elsewhere`) ; lire une conversation sur un appareil remet aussi à zéro son badge non-lu sur les autres. Septième pièce de la spécification NEXORA — voir [`PHASES.md`](./PHASES.md).
+
+**Réglages de confidentialité réellement appliqués** (`whoCanMessageMe`, `whoCanSeeMyStatus`) : existaient depuis le début sans jamais être vérifiés côté serveur — désormais câblés sur le vrai carnet de contacts (`ContactsService`), qui bloque respectivement le démarrage d'une nouvelle conversation et la visibilité d'un statut "Contacts uniquement" pour qui n'est pas un contact accepté. Huitième et dernière pièce de la spécification NEXORA — voir [`PHASES.md`](./PHASES.md).
+
+**La spécification NEXORA (30 sections) est maintenant posée en intégralité**, dans l'ordre demandé : médias multiples → partage de contact → profil public + QR → logique de notifications → appels vocaux → appels vidéo → multi-appareils → tests/sécurité. Voir [`PHASES.md`](./PHASES.md) pour le détail de chaque item.
+
 ## Stack
 
 | Côté | Techs |
@@ -34,6 +48,7 @@ backend/
     users/ profiles/    Comptes et profils (langues, confidentialité, consentement voix)
     languages/          Registre extensible des langues supportées
     conversations/      Conversations et membres
+    contacts/            Demandes de contact, blocage, partage de carte
     messages/           Messages texte et images, statuts envoyé/livré/lu
     voice/              Upload et lecture des messages vocaux
     translations/       Pipeline STT → traduction → TTS (fournisseurs interchangeables)

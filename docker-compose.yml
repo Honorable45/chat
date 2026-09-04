@@ -1,0 +1,33 @@
+name: glotta
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: glotta
+      POSTGRES_PASSWORD: glotta
+      POSTGRES_DB: glotta
+    ports:
+      - "5432:5432"
+    volumes:
+      - glotta_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U glotta -d glotta"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Utilisé à partir de la phase "files d'attente de traduction" (section 39) et
+  # pour la présence en temps réel. Pas requis pour développer les phases 1-8.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - glotta_redis_data:/data
+
+volumes:
+  glotta_postgres_data:
+  glotta_redis_data:

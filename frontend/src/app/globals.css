@@ -1,0 +1,127 @@
+@import "tailwindcss";
+
+/*
+ * Palette Glotta : sombre par défaut (identité d'origine de l'app), avec un
+ * thème clair désormais disponible — violet/cyan en accent, magenta pour les
+ * indicateurs de non-lu, vert pour la présence en ligne, dans les deux cas.
+ *
+ * Trois états, jamais deux : un choix explicite ("Clair"/"Sombre", voir
+ * AppearanceSection + lib/theme.ts) pose `data-theme` sur <html> et gagne
+ * toujours ; "Système" (ou aucun choix encore fait) retire cet attribut et
+ * laisse `prefers-color-scheme` décider. Le sombre reste la valeur de base
+ * de :root (jamais besoin d'un bloc [data-theme="dark"] séparé, qui ne
+ * ferait que répéter ces mêmes valeurs) ; seul le clair a besoin d'un
+ * second bloc, posé une fois pour l'auto (média, gardé par :not([data-theme="light"]))
+ * et une fois pour le choix explicite ([data-theme="light"]).
+ */
+:root {
+  color-scheme: dark;
+  --background: #0a0a12;
+  --surface: #12121d;
+  --surface-raised: #171726;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --foreground: #f4f4f8;
+  --muted: #8b8b9e;
+  --muted-strong: #b4b4c6;
+  --accent: #7c6cf6;
+  --accent-2: #22d3ee;
+  --accent-contrast: #0a0a12;
+  --unread: #ec4899;
+  --online: #34d399;
+  --danger: #f87171;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --background: #f5f5fa;
+    --surface: #ffffff;
+    --surface-raised: #ffffff;
+    --border: rgba(15, 15, 30, 0.09);
+    --border-strong: rgba(15, 15, 30, 0.16);
+    --foreground: #14141f;
+    --muted: #6b6b7c;
+    --muted-strong: #43434f;
+    --accent: #6d5cf0;
+    --accent-2: #0891b2;
+    --accent-contrast: #ffffff;
+    --unread: #db2777;
+    --online: #059669;
+    --danger: #dc2626;
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --background: #f5f5fa;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --border: rgba(15, 15, 30, 0.09);
+  --border-strong: rgba(15, 15, 30, 0.16);
+  --foreground: #14141f;
+  --muted: #6b6b7c;
+  --muted-strong: #43434f;
+  --accent: #6d5cf0;
+  --accent-2: #0891b2;
+  --accent-contrast: #ffffff;
+  --unread: #db2777;
+  --online: #059669;
+  --danger: #dc2626;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-strong: var(--muted-strong);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-unread: var(--unread);
+  --color-online: var(--online);
+  --color-danger: var(--danger);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+.glotta-gradient-text {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.glotta-scroll-hidden {
+  scrollbar-width: none;
+}
+.glotta-scroll-hidden::-webkit-scrollbar {
+  display: none;
+}
