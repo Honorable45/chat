@@ -79,7 +79,7 @@ export function StatusesPanel({ hiddenOnMobile }: { hiddenOnMobile?: boolean }) 
 
   return (
     <div
-      className={`min-h-0 flex-1 flex-col border-r border-border lg:flex lg:w-80 lg:flex-none lg:shrink-0 ${
+      className={`min-h-0 min-w-0 flex-1 flex-col border-r border-border lg:flex lg:w-80 lg:flex-none lg:shrink-0 ${
         hiddenOnMobile ? "hidden" : "flex"
       }`}
     >
