@@ -242,6 +242,23 @@ export class StatusesService {
     }
   }
 
+  /**
+   * Suppression déclenchée depuis la modération admin (voir AdminService) —
+   * jamais de vérification de propriétaire ici, contrairement à `remove()`.
+   * Nouvelle méthode plutôt qu'un paramètre optionnel sur `remove()`, pour
+   * ne jamais affaiblir silencieusement la vérification normale (même choix
+   * que MessagesService.removeAsAdmin).
+   */
+  async removeAsAdmin(statusId: string): Promise<void> {
+    const status = await this.prisma.status.findUnique({ where: { id: statusId } });
+    if (!status) throw new NotFoundException('Statut introuvable.');
+
+    await this.prisma.status.delete({ where: { id: statusId } });
+    if (status.mediaStorageKey) {
+      await this.storage.delete(status.mediaStorageKey);
+    }
+  }
+
   /** Charge un statut et vérifie qu'il est actif ET visible par ce viewer — 404 sinon (section 23). */
   private async loadVisible(viewerId: string, statusId: string): Promise<Status> {
     const status = await this.prisma.status.findUnique({ where: { id: statusId } });

@@ -28,6 +28,27 @@ async function main() {
       });
     }
     console.log(`Seed terminé : ${INITIAL_LANGUAGES.length} langues.`);
+
+    // Bootstrap du premier compte admin (section admin) : aucun endpoint ne
+    // permet de s'auto-promouvoir, volontairement — cette variable n'existe
+    // que pour ce cas précis, à retirer de l'environnement une fois utilisée
+    // (voir .env.example). L'utilisateur doit déjà s'être inscrit
+    // normalement : ce seed ne crée jamais de compte, il ne fait que
+    // promouvoir un compte existant.
+    const bootstrapEmail = process.env.ADMIN_BOOTSTRAP_EMAIL;
+    if (bootstrapEmail) {
+      const result = await prisma.user.updateMany({
+        where: { email: bootstrapEmail },
+        data: { role: 'ADMIN' },
+      });
+      if (result.count === 0) {
+        console.warn(
+          `ADMIN_BOOTSTRAP_EMAIL="${bootstrapEmail}" : aucun compte avec cet email (inscrivez-vous normalement d'abord).`,
+        );
+      } else {
+        console.log(`Compte admin promu : ${bootstrapEmail}.`);
+      }
+    }
   } finally {
     await prisma.$disconnect();
   }

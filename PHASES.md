@@ -2063,16 +2063,203 @@ anti-clickjacking côté frontend, un access token reste valide jusqu'à son
 expiration naturelle même après déconnexion/changement de mot de passe,
 coût de `resetPassword` qui grandit avec le nombre de tokens actifs.
 
+## Responsivité mobile : contenu tronqué quand le rail est visible
+
+Bug réel trouvé par capture d'écran à largeur mobile (375px), jamais visible
+en développement sur un écran large. Les 5 panneaux affichés en 2ᵉ colonne
+(`ConversationList`, `CallsPanel`, `ContactsPanel`, `NotificationsPanel`,
+`StatusesPanel`) partagent tous la même classe flex (`min-h-0 flex-1
+flex-col ...`) mais sans `min-w-0` — sur un écran étroit, dès que le rail
+d'icônes de navigation (`IconRail`, 64px) est visible à côté d'un de ces
+panneaux (aucune conversation ouverte), leur contenu (barre de recherche,
+texte des aperçus) refusait de rétrécir sous sa largeur intrinsèque : le
+conteneur racine (`flex h-dvh overflow-hidden`, voir `chat/layout.tsx`)
+masquait le débordement plutôt que de le laisser pousser la page — d'où
+l'absence de scroll horizontal visible malgré le contenu réellement tronqué.
+
+Corrigé en ajoutant `min-w-0` aux 5 panneaux — `ChatWindow` et `SettingsPage`
+l'avaient déjà, ce qui expliquait qu'ils n'étaient pas touchés.
+
+Vérifié par capture d'écran Puppeteer à 375px (iPhone SE, le plus sévère des
+formats courants) sur l'ensemble des écrans : liste de conversations avec
+rail visible (bug confirmé puis corrigé), Paramètres, Statuts, Appels,
+Contacts, nouvelle conversation, menu du compte, profil public, scan QR,
+long message avec mot sans espaces (retour à la ligne forcé), compositeur de
+statut, et un appel vidéo complet entre deux onglets (aperçu de soi-même en
+incrustation, contrôles en bas — déjà correct, aucune régression).
+
+### Vérifications effectuées
+
+Frontend : `tsc --noEmit`, `eslint` (0 erreur), vérification visuelle en
+direct par navigateur (Puppeteer, captures à 375px) sur les écrans listés
+ci-dessus.
+
+## Partie admin : rôle, signalement, modération, tableau de bord
+
+Section jamais construite depuis le début du projet (l'utilisateur l'a
+signalé après coup : "on a oublié de construire la partie admin"). Portée
+précisée à la demande : tableau de bord/métriques, gestion des
+utilisateurs, modération de contenu — dans une **app Next.js séparée à la
+racine du monorepo**, jamais un onglet dans l'app existante.
+
+Deux constats ont changé la portée réelle du travail par rapport à la
+demande initiale : aucun rôle n'existait sur `User` (juste `isActive`), et
+surtout **aucun mécanisme de signalement n'existait** — pour qu'un admin
+puisse "modérer du contenu", il fallait d'abord qu'un utilisateur normal
+puisse en signaler. Les deux ont été construits.
+
+- **Rôle admin** : `enum Role {USER ADMIN}` + `User.role` (migration
+  `add_role_and_reports`). Nouveau `AdminGuard` (premier guard
+  d'autorisation du projet au-delà de `JwtAuthGuard` — jusqu'ici toutes les
+  vérifications étaient faites à la main dans les services) : relit
+  toujours `role`/`isActive` en base à chaque requête, jamais depuis un
+  claim JWT mis en cache — même principe que la révocation de session déjà
+  vérifiée en base plutôt que dans le token. Bootstrap du tout premier
+  compte admin via `ADMIN_BOOTSTRAP_EMAIL` dans `prisma/seed.ts` (promeut
+  un compte déjà inscrit normalement) — aucun endpoint ne permet de
+  s'auto-promouvoir.
+- **Signalement** (`ReportsModule`, nouveau) : `POST /reports` (n'importe
+  quel utilisateur authentifié), cible polymorphe (`targetType` +
+  `targetId`, jamais une vraie clé étrangère — la cible peut être supprimée
+  entre le signalement et son traitement), validation légère que la cible
+  existe réellement à la création. Bouton "Signaler" minimal (un seul champ
+  de motif, pas de taxonomie de raisons prédéfinies) ajouté sur
+  `MessageBubble` et `StatusViewer` côté frontend principal, jamais sur son
+  propre message/statut.
+- **`AdminModule`** (nouveau), toutes routes sous `AdminGuard` :
+  `GET /admin/metrics` (premiers `count()` agrégés du projet — utilisateurs,
+  messages, appels, statuts actifs, signalements en attente),
+  `GET /admin/users` (paginée par curseur, recherche username/email),
+  `PATCH /admin/users/:id` (active/désactive un compte — le champ existait
+  déjà, jamais exposé en écriture depuis un endpoint admin),
+  `GET /admin/reports` (paginée, avec aperçu de la cible au moment de la
+  consultation), `PATCH /admin/reports/:id` (`DISMISS` ou
+  `REMOVE_CONTENT`). `REMOVE_CONTENT` appelle une nouvelle méthode
+  `removeAsAdmin` dans `MessagesService`/`StatusesService` — jamais un
+  bypass de la méthode `remove()` existante (owner-only), pour ne jamais
+  affaiblir silencieusement la vérification normale utilisateur.
+- **`admin/`** (nouvelle app Next.js, à la racine) : mêmes versions et
+  tokens de thème que `frontend/` (parité visuelle voulue), port dédié 3001,
+  clés localStorage préfixées différemment (`glotta-admin.*`). Pages
+  `/login`, `/dashboard`, `/users`, `/reports`. État `"forbidden"` distinct
+  de `"anonymous"` dans le contexte d'auth : un compte réel mais non-admin
+  voit "Accès refusé", jamais une redirection en boucle vers `/login` — la
+  vraie décision d'autorisation reste de toute façon côté serveur
+  (`AdminGuard`), cet écran n'en est que le reflet cohérent.
+- **CORS** : `CORS_ORIGIN` (déjà une liste séparée par virgules) doit
+  inclure l'origine de l'app admin (`http://localhost:3001` en dev) —
+  documenté dans `.env.example`.
+
+Un imprévu découvert en cours de route : `backend/.gitignore` avait déjà eu
+un motif `uploads/` trop large (corrigé lors de l'audit de sécurité
+précédent) — en créant `admin/`, aucune récidive cette fois, mais la
+vigilance sur les motifs `.gitignore` non ancrés reste de mise pour tout
+nouveau dossier à la racine.
+
+Vérifié : 19 nouveaux tests unitaires (`AdminGuard` — autorise un admin
+actif, refuse un utilisateur/un admin désactivé/un compte introuvable,
+relit toujours en base ; `ReportsService` — création, cible manquante,
+bonne table selon le type ; `AdminService` — métriques agrégées, pagination
+users/reports, `updateUserStatus`, `resolveReport` pour les trois branches
+DISMISS/REMOVE_CONTENT MESSAGE/REMOVE_CONTENT STATUS/REMOVE_CONTENT USER
+refusé). 12 nouveaux tests e2e (`admin.e2e-spec.ts`) : un utilisateur normal
+reçoit 403 sur chaque route `/admin/*` (`it.each`), un admin réussit,
+un compte désactivé ne peut plus se reconnecter, un signalement créé par un
+utilisateur est bien visible par l'admin avec le bon aperçu,
+`REMOVE_CONTENT` supprime réellement le message (même assertion que pour une
+suppression normale), un signalement déjà traité ne peut pas être retraité.
+292 tests unitaires et 84 tests e2e au total côté backend, tous verts.
+
+Frontend principal (bouton Signaler) et app admin vérifiés en direct par
+navigateur (Puppeteer) : signalement d'un message depuis une vraie
+conversation puis confirmation visible ; connexion admin réelle avec
+promotion en base (`role='ADMIN'`, exactement ce que ferait
+`ADMIN_BOOTSTRAP_EMAIL`), tableau de bord affichant les vrais chiffres,
+liste des utilisateurs réelle, signalement visible dans `/reports` avec son
+aperçu puis "Ignorer" le retire bien de la liste "En attente" ; connexion
+d'un compte non-admin confirmant l'écran "Accès refusé".
+
+### Vérifications effectuées
+
+Backend : `tsc`, `eslint` (0 erreur), 292 tests unitaires, 84 tests e2e.
+Frontend principal : `tsc --noEmit`, `eslint`, `next build` (0 erreur). App
+admin : `tsc --noEmit`, `eslint`, `next build` (0 erreur), vérification en
+direct par navigateur pour les deux apps (signalement, connexion admin,
+tableau de bord, gestion utilisateurs, modération, écran d'accès refusé).
+
+## Préparation au déploiement (Vercel + Railway/Render)
+
+Cible choisie : PaaS séparés — `frontend/` et `admin/` sur Vercel (deux
+projets distincts), `backend/` sur Railway ou Render via Docker, Postgres/
+Redis managés par la même plateforme que le backend.
+
+- **`backend/Dockerfile`** (nouveau, multi-étapes) : compile puis ne garde
+  que le nécessaire pour tourner. `node_modules` n'est volontairement **pas**
+  élagué des devDependencies entre les deux étapes — `prisma` (CLI, pour
+  `migrate deploy` au démarrage) et `dotenv` (chargé par `prisma.config.ts`)
+  sont des devDependencies mais restent nécessaires au runtime, pas
+  seulement en développement ; les élaguer casserait les migrations au
+  premier déploiement.
+- **`backend/docker-entrypoint.sh`** (nouveau) : `prisma migrate deploy`
+  (idempotent, sûr à rejouer à chaque démarrage) puis démarre le serveur.
+- **Trois vrais bugs de build/démarrage trouvés en construisant et en
+  exécutant réellement l'image** (jamais seulement en relisant le
+  Dockerfile) :
+  1. `npm ci` échouait (`ERESOLVE`, conflit de peer dependency
+     `@nestjs/throttler`) — `backend/.npmrc` corrige déjà ce conflit connu
+     pour le développement local (`legacy-peer-deps=true`, voir son propre
+     commentaire) mais n'était jamais copié dans l'image avant `npm ci`.
+  2. `prisma generate` échouait au chargement de `prisma.config.ts`
+     (`DATABASE_URL` non résolvable) — une valeur factice le temps de cette
+     seule étape suffit, `generate` ne se connecte jamais réellement à une base.
+  3. `prisma migrate deploy` échouait au démarrage du conteneur
+     ("datasource.url property is required") — `prisma.config.ts` vit à la
+     racine du projet, jamais copié dans l'image alors que `dist/`,
+     `prisma/` et `package.json` l'étaient : la CLI ne le trouvait pas et
+     ignorait silencieusement `DATABASE_URL` pourtant bien présente en env.
+- **Stockage des fichiers, action requise à noter avant tout déploiement
+  réel** : `STORAGE_DRIVER=local` (seul driver implémenté) écrit sur le
+  disque du conteneur — éphémère sur un service Railway/Render standard,
+  tout fichier uploadé serait perdu au premier redéploiement. Documenté
+  comme un point bloquant dans `DEPLOYMENT.md` (volume persistant en
+  solution immédiate, driver S3 en solution durable, non construit ici).
+- **`DEPLOYMENT.md`** (nouveau, racine du dépôt) : checklist complète —
+  variables d'environnement de production par app, secrets à régénérer
+  (jamais les valeurs `change-me-*` de `.env.example`), `CORS_ORIGIN` à
+  étendre aux deux domaines Vercel, procédure de bootstrap du premier
+  compte admin, caveat des déploiements de preview Vercel (URL aléatoire
+  jamais dans `CORS_ORIGIN`), caveat SSL auto-signé pour un Postgres
+  managé (`?sslmode=no-verify`, jamais un changement de code).
+
+Vérifié : image construite avec `podman build` puis réellement démarrée
+(`podman run`) contre la vraie base de développement — migrations
+appliquées avec succès, serveur répondant sur `/api/health` et
+`/api/languages` avec de vraies requêtes HTTP, pas seulement une lecture du
+Dockerfile. Les trois bugs ci-dessus ont chacun été trouvés par un échec
+réel à cette étape, jamais anticipés par relecture seule.
+
+### Vérifications effectuées
+
+Backend : build Docker réel (`podman build`), conteneur démarré et testé
+par de vraies requêtes HTTP contre la base de développement existante.
+
 ## Prochaine étape
 
 Les 8 items de la spécification NEXORA sont posés et vérifiés, une passe
-de stabilisation post-spécification, et un audit de sécurité avec
-correction des deux constats prioritaires (ci-dessus). Hors périmètre,
-resté noté au fil de l'eau : mise à niveau ElevenLabs pour activer
-réellement la synthèse vocale traduite ; nouvelle tentative de
-vérification live par navigateur pour la propagation de lecture
-multi-appareils (item 7) si l'environnement de test se stabilise (la
-logique serveur, elle, est prouvée par de vrais tests e2e par sockets) ;
-périmètre de "Discussions vocales" (rooms vocales) jamais défini, resté
-hors de "l'essentiel" pour cette passe ; constats faibles de l'audit de
-sécurité listés ci-dessus.
+de stabilisation post-spécification, un audit de sécurité avec correction
+des deux constats prioritaires, un correctif de responsivité mobile, la
+partie admin (rôle, signalement, modération, tableau de bord), et la
+préparation au déploiement (ci-dessus). Hors périmètre, resté noté au fil
+de l'eau : mise à niveau ElevenLabs pour activer réellement la synthèse
+vocale traduite ; nouvelle tentative de vérification live par navigateur
+pour la propagation de lecture multi-appareils (item 7) si l'environnement
+de test se stabilise (la logique serveur, elle, est prouvée par de vrais
+tests e2e par sockets) ; périmètre de "Discussions vocales" (rooms
+vocales) jamais défini, resté hors de "l'essentiel" pour cette passe ;
+constats faibles de l'audit de sécurité (Swagger sans authentification,
+JWT en localStorage côté frontend, absence d'en-tête anti-clickjacking,
+accès token vivant jusqu'à expiration après déconnexion, coût de
+`resetPassword` proportionnel au nombre de tokens actifs) ; taxonomie de
+motifs de signalement prédéfinis (actuellement un simple champ texte
+libre) ; driver de stockage S3-compatible (nécessaire pour un déploiement
+réel sur un système de fichiers éphémère, voir DEPLOYMENT.md).

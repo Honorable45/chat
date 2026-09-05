@@ -321,3 +321,12 @@ export const MonitorIcon = (p: IconProps) =>
     </>,
     p,
   );
+
+export const FlagIcon = (p: IconProps) =>
+  base(
+    <>
+      <path d="M5 3v18" />
+      <path d="M5 4h11l-2.5 4L16 12H5" />
+    </>,
+    p,
+  );

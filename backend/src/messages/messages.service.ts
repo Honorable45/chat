@@ -653,6 +653,44 @@ export class MessagesService {
   }
 
   /**
+   * Suppression déclenchée depuis la modération admin (voir AdminService) —
+   * jamais d'appartenance à la conversation à vérifier ici : contrairement à
+   * `remove()` (propriétaire uniquement), un admin n'est pas forcément
+   * membre de la conversation modérée. Mêmes effets de bord que `remove()`
+   * (fichiers effacés, `message:deleted` diffusé à tous les membres) —
+   * une nouvelle méthode plutôt qu'un paramètre optionnel sur `remove()`,
+   * pour ne jamais affaiblir silencieusement la vérification normale.
+   */
+  async removeAsAdmin(messageId: string): Promise<void> {
+    const message = await this.prisma.message.findUnique({ where: { id: messageId } });
+    if (!message) {
+      throw new NotFoundException('Message introuvable.');
+    }
+    if (message.deletedAt) return; // déjà supprimé : idempotent
+
+    const updated = await this.prisma.message.update({
+      where: { id: messageId },
+      data: { deletedAt: new Date(), text: null },
+      include: MESSAGE_INCLUDE,
+    });
+
+    if ((updated.attachments ?? []).length > 0) {
+      const attachments = await this.prisma.attachment.findMany({ where: { messageId } });
+      await Promise.all(attachments.map((a) => this.storage.delete(a.url)));
+    }
+
+    const members = await this.prisma.conversationMember.findMany({
+      where: { conversationId: message.conversationId, leftAt: null },
+      select: { userId: true },
+    });
+    this.events.emitToUsers(
+      members.map((m) => m.userId),
+      'message:deleted',
+      { id: updated.id, conversationId: updated.conversationId },
+    );
+  }
+
+  /**
    * Marque comme lus tous les messages non-lus reçus dans la conversation
    * (jamais ses propres messages). La lecture implique la livraison : les
    * messages encore marqués `deliveredAt: null` la reçoivent au passage.

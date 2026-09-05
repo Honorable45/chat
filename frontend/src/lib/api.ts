@@ -398,6 +398,13 @@ export const api = {
     views: (id: string) => request<StatusView[]>(`/statuses/${id}/views`),
     remove: (id: string) => request<void>(`/statuses/${id}`, { method: "DELETE" }),
   },
+  reports: {
+    // N'importe quel utilisateur peut signaler (section admin/modération) —
+    // aucune lecture côté app principale, seule l'app admin séparée liste
+    // et traite les signalements.
+    create: (params: { targetType: "MESSAGE" | "STATUS" | "USER"; targetId: string; reason: string }) =>
+      request<{ id: string; status: string }>("/reports", { method: "POST", body: params }),
+  },
 };
 
 export { extractErrorMessage };

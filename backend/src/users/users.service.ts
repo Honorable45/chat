@@ -33,6 +33,10 @@ function toMeDto(user: UserWithRelations, presence: PresenceInfo) {
     lastName: user.lastName,
     email: user.email,
     phone: user.phone,
+    // Distingue un compte admin côté client (voir l'app admin séparée,
+    // AdminGuard fait de toute façon foi côté serveur — ce champ ne sert
+    // qu'à afficher/masquer l'interface, jamais une décision de sécurité).
+    role: user.role,
     isOnline: presence.isOnline,
     lastSeenAt: presence.lastSeenAt,
     primaryLanguage: user.primaryLanguage ? toLanguageSummary(user.primaryLanguage) : null,

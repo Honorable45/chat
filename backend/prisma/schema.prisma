@@ -57,6 +57,11 @@ model User {
   sharedContactCards       SharedContact[]        @relation("SharedContactUser")
 
   isActive  Boolean  @default(true)
+  // Jamais modifiable depuis un endpoint self-service (section admin) :
+  // uniquement en base (voir prisma/seed.ts, ADMIN_BOOTSTRAP_EMAIL) ou via
+  // PATCH /admin/users/:id par un admin déjà existant — AdminGuard relit
+  // toujours ce champ en base à chaque requête, jamais depuis un claim JWT.
+  role Role @default(USER)
   // Horodaté à la dernière déconnexion de tous les sockets de l'utilisateur
   // (voir PresenceService) — le statut "en ligne" lui-même reste en mémoire,
   // jamais en base (section 6 : dérivé des connexions WebSocket actives).
@@ -64,8 +69,16 @@ model User {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
+  reportsFiled   Report[] @relation("ReportReporter")
+  reportsResolved Report[] @relation("ReportResolver")
+
   @@index([username])
   @@map("users")
+}
+
+enum Role {
+  USER
+  ADMIN
 }
 
 model UserSession {
@@ -608,4 +621,46 @@ model StatusView {
 
   @@unique([statusId, viewerId])
   @@map("status_views")
+}
+
+// ---------------------------------------------------------------------------
+// Modération (section admin)
+// ---------------------------------------------------------------------------
+
+// Cible volontairement polymorphe (targetType + targetId, jamais une vraie
+// clé étrangère vers Message/Status) : la cible peut être supprimée entre le
+// signalement et son traitement, un admin doit pouvoir voir "cible
+// supprimée" plutôt qu'un signalement cassé par une jointure manquante.
+model Report {
+  id         String       @id @default(cuid())
+  targetType ReportTarget
+  targetId   String
+
+  reporterId String
+  reporter   User   @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reason     String @db.VarChar(500)
+
+  status ReportStatus @default(PENDING)
+
+  resolvedById String?
+  resolvedBy   User?     @relation("ReportResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  resolvedAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([status, createdAt])
+  @@index([targetType, targetId])
+  @@map("reports")
+}
+
+enum ReportTarget {
+  MESSAGE
+  STATUS
+  USER
+}
+
+enum ReportStatus {
+  PENDING
+  RESOLVED
+  DISMISSED
 }

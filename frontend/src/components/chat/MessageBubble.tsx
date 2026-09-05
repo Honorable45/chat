@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import { AuthenticatedImage } from "@/components/AuthenticatedImage";
 import { Avatar } from "@/components/Avatar";
-import { CheckCheckIcon, CheckIcon, ExpandIcon, PersonIcon, PhoneIcon, PlusIcon, RefreshIcon, VideoIcon } from "@/components/icons";
+import { CheckCheckIcon, CheckIcon, ExpandIcon, FlagIcon, PersonIcon, PhoneIcon, PlusIcon, RefreshIcon, VideoIcon } from "@/components/icons";
 import { ImageLightbox } from "@/components/ImageLightbox";
+import { ReportModal } from "@/components/ReportModal";
 import { api, ApiError } from "@/lib/api";
 import { displayName, timeOfDay } from "@/lib/format";
 import type { CallDetail, ContactStatus, ConversationParticipant, Message, PublicUser } from "@/lib/types";
@@ -156,6 +157,7 @@ export function MessageBubble({
   onCallBack?: (kind: "AUDIO" | "VIDEO") => void;
 }) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
 
   if (message.deletedAt) {
     return (
@@ -171,7 +173,7 @@ export function MessageBubble({
   const attachmentUrl = message.attachments?.[0] ? api.messages.attachmentUrl(message.attachments[0].id) : null;
 
   return (
-    <div className={`flex items-end gap-2 ${own ? "justify-end" : "justify-start"}`}>
+    <div className={`group flex items-end gap-2 ${own ? "justify-end" : "justify-start"}`}>
       {!own &&
         (showAvatar && sender ? (
           <Avatar firstName={sender.firstName} lastName={sender.lastName} avatarUrl={sender.avatarUrl} size={28} />
@@ -262,6 +264,22 @@ export function MessageBubble({
           {own && <StatusTicks message={message} />}
         </div>
       </div>
+
+      {/* Jamais son propre message, jamais un appel (rien à signaler) — visible seulement au survol pour rester discret. */}
+      {!own && message.type !== "CALL" && (
+        <button
+          onClick={() => setReportOpen(true)}
+          aria-label="Signaler ce message"
+          title="Signaler"
+          className="mb-1 self-end text-muted opacity-0 transition hover:text-danger group-hover:opacity-100"
+        >
+          <FlagIcon size={14} />
+        </button>
+      )}
+
+      {reportOpen && (
+        <ReportModal targetType="MESSAGE" targetId={message.id} onClose={() => setReportOpen(false)} />
+      )}
     </div>
   );
 }

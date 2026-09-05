@@ -39,6 +39,7 @@ function buildUser(overrides: Partial<User> = {}): User {
     primaryLanguageId: 'lang-fr',
     preferredReceiveLanguageId: 'lang-fr',
     isActive: true,
+    role: 'USER',
     lastSeenAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),

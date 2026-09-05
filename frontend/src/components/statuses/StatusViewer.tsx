@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { AuthenticatedImage } from "@/components/AuthenticatedImage";
 import { AuthenticatedVideo } from "@/components/AuthenticatedVideo";
 import { Avatar } from "@/components/Avatar";
-import { UsersIcon, XIcon } from "@/components/icons";
+import { FlagIcon, UsersIcon, XIcon } from "@/components/icons";
+import { ReportModal } from "@/components/ReportModal";
 import { api, ApiError } from "@/lib/api";
 import { avatarGradient, displayName, shortRelativeTime } from "@/lib/format";
 import type { Status, StatusView } from "@/lib/types";
@@ -31,6 +32,7 @@ export function StatusViewer({
   const [progress, setProgress] = useState(0);
   const [paused, setPaused] = useState(false);
   const [viewsOpen, setViewsOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
   const [views, setViews] = useState<StatusView[] | null>(null);
   const viewedRef = useRef<Set<string>>(new Set());
 
@@ -67,7 +69,7 @@ export function StatusViewer({
   // n'ont pas de durée propre. Vidéo et vocal avancent sur leur lecture
   // réelle (onEnded des composants dédiés, plus bas).
   useEffect(() => {
-    if (!current || paused || viewsOpen || !TIMED_TYPES.has(current.type)) return;
+    if (!current || paused || viewsOpen || reportOpen || !TIMED_TYPES.has(current.type)) return;
     const start = Date.now() - progress * AUTO_ADVANCE_MS;
     const tick = setInterval(() => {
       const elapsed = Date.now() - start;
@@ -77,7 +79,7 @@ export function StatusViewer({
     }, 50);
     return () => clearInterval(tick);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- ne doit redémarrer que sur un changement de statut ou de pause, pas à chaque tick de `progress`.
-  }, [current, paused, viewsOpen]);
+  }, [current, paused, viewsOpen, reportOpen]);
 
   if (!current) return null;
 
@@ -132,9 +134,18 @@ export function StatusViewer({
             </div>
           </div>
           <div className="flex items-center gap-1">
-            {current.isMine && (
+            {current.isMine ? (
               <button onClick={remove} className="rounded-full px-2 py-1 text-xs text-white/80 hover:bg-white/10" title="Supprimer">
                 Supprimer
+              </button>
+            ) : (
+              <button
+                onClick={() => setReportOpen(true)}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-white/80 hover:bg-white/10"
+                title="Signaler"
+                aria-label="Signaler ce statut"
+              >
+                <FlagIcon size={17} />
               </button>
             )}
             <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-full text-white hover:bg-white/10">
@@ -229,6 +240,10 @@ export function StatusViewer({
           </div>
         )}
       </div>
+
+      {reportOpen && (
+        <ReportModal targetType="STATUS" targetId={current.id} onClose={() => setReportOpen(false)} />
+      )}
     </div>
   );
 }

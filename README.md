@@ -39,12 +39,15 @@ Messagerie instantanée multilingue : texte et **vocaux traduits en temps réel*
 ## Structure du dépôt
 
 ```text
-frontend/            Application Next.js (App Router)
+frontend/            Application Next.js principale (App Router)
+admin/               Application Next.js séparée : tableau de bord, gestion
+                     des utilisateurs, modération — réservée au rôle ADMIN
 backend/
   prisma/schema.prisma  Modèle de données complet (User, Conversation, Message,
-                         VoiceMessage, MessageTranslation, Notification, Status…)
+                         VoiceMessage, MessageTranslation, Notification, Status,
+                         Report…)
   src/
-    auth/              Inscription, connexion, JWT, sessions
+    auth/              Inscription, connexion, JWT, sessions, AdminGuard
     users/ profiles/    Comptes et profils (langues, confidentialité, consentement voix)
     languages/          Registre extensible des langues supportées
     conversations/      Conversations et membres
@@ -55,12 +58,18 @@ backend/
     notifications/      Notifications in-app
     presence/           En ligne / hors ligne / typing / recording (WebSocket)
     statuses/           Statuts/stories 24h
+    reports/            Signalement de contenu (message/statut/utilisateur)
+    admin/              Tableau de bord, gestion des utilisateurs, modération
     uploads/            Validation et stockage des fichiers
     websocket/          Gateway Socket.IO
     prisma/             Service Prisma partagé
     common/              Filtres, guards, décorateurs transverses
+  Dockerfile           Image de production (voir DEPLOYMENT.md)
 docker-compose.yml    Postgres + Redis pour le développement local
 ```
+
+Voir [`DEPLOYMENT.md`](./DEPLOYMENT.md) pour déployer les trois applications
+(Vercel pour `frontend/`et `admin/`, Railway/Render pour `backend/`).
 
 ## Installation
 
