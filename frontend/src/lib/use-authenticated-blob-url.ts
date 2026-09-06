@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { resolveMediaSrc } from "./api";
 import { getAccessToken } from "./token-store";
 
 /**
@@ -28,7 +29,10 @@ export function useAuthenticatedBlobUrl(src: string): { url: string | null; fail
     });
 
     const token = getAccessToken();
-    fetch(src, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })
+    // `src` peut être un chemin relatif (`/api/...`) : un fetch direct se
+    // résoudrait contre l'origine du FRONTEND, pas celle du backend — voir
+    // resolveMediaSrc. Toujours résoudre en absolu avant de fetcher.
+    fetch(resolveMediaSrc(src) ?? src, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })
       .then((res) => {
         if (!res.ok) throw new Error(String(res.status));
         return res.blob();

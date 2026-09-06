@@ -34,14 +34,21 @@ Le `Dockerfile` à la racine de `backend/` est prêt à l'emploi et vérifié
 - Expose `GET /api/health` (aucune dépendance base/Redis — un check de vie
   fiable même si la base est temporairement indisponible).
 
-### ⚠️ Stockage des fichiers : action requise
+### ⚠️ Stockage des fichiers : action requise pour les messages vocaux
 
-`STORAGE_DRIVER=local` (le seul implémenté actuellement) écrit avatars,
-images, vidéos et messages vocaux sur le disque du conteneur. **Le
-système de fichiers d'un service Railway/Render standard est éphémère** :
-tout est perdu à chaque redéploiement ou redémarrage, sans avertissement.
+`STORAGE_DRIVER=local` écrit sur le disque du conteneur. **Le système de
+fichiers d'un service Railway/Render standard est éphémère** : tout est
+perdu à chaque redéploiement ou redémarrage, sans avertissement.
 
-Deux options, à choisir avant le premier déploiement réel :
+Depuis l'intégration Cloudinary (voir `CloudinaryProvider`), **cette alerte
+ne concerne plus que les messages vocaux**, qui restent toujours sur le
+disque local quel que soit l'état de Cloudinary — c'est le seul type de
+média encore concerné. Renseignez les variables `CLOUDINARY_*` de
+`backend/.env.example` et les images, vidéos et avatars basculent
+automatiquement sur Cloudinary, sans volume persistant à prévoir pour eux.
+
+Pour les messages vocaux, deux options, à choisir avant le premier
+déploiement réel :
 1. **Volume/disque persistant** (le plus rapide à mettre en place, zéro
    changement de code) : Railway propose des *Volumes*, Render des
    *Persistent Disks* — montez-le au chemin de `STORAGE_LOCAL_PATH`
@@ -63,7 +70,9 @@ Reprenez `backend/.env.example` et changez impérativement :
 | `REDIS_URL` | Fournie par le Redis managé |
 | `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | Deux secrets forts générés (`openssl rand -hex 32`) — **jamais** les valeurs `change-me-*` de l'exemple |
 | `CORS_ORIGIN` | Domaines Vercel de `frontend/` **et** `admin/`, séparés par une virgule (ex. `https://glotta.vercel.app,https://admin-glotta.vercel.app`) |
-| `STORAGE_LOCAL_PATH` | Chemin du volume persistant monté (voir ci-dessus) |
+| `STORAGE_LOCAL_PATH` | Chemin du volume persistant monté (messages vocaux uniquement, voir ci-dessus) |
+| `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Identifiants du Dashboard Cloudinary — active le stockage images/vidéos/avatars |
+| `CLOUDINARY_AUTH_TOKEN_KEY` | Cloudinary → Settings → Security → "Token-based authentication" — requis pour les images/vidéos de messages/statuts (pas les avatars) |
 | `ADMIN_BOOTSTRAP_EMAIL` | Email d'un compte déjà inscrit, pour la toute première promotion admin — voir §4, à retirer une fois utilisé |
 
 Les fournisseurs IA (`STT_PROVIDER`, `TRANSLATION_PROVIDER`,
@@ -123,7 +132,8 @@ modifie que `isActive`, jamais `role`, par design).
 ## Checklist avant mise en production
 
 - [ ] `JWT_ACCESS_SECRET`/`JWT_REFRESH_SECRET` régénérés (jamais les valeurs d'exemple)
-- [ ] Volume persistant monté pour `STORAGE_LOCAL_PATH`, ou driver S3 implémenté
+- [ ] `CLOUDINARY_CLOUD_NAME`/`CLOUDINARY_API_KEY`/`CLOUDINARY_API_SECRET`/`CLOUDINARY_AUTH_TOKEN_KEY` renseignés (images/vidéos/avatars)
+- [ ] Volume persistant monté pour `STORAGE_LOCAL_PATH` (messages vocaux uniquement), ou driver S3 implémenté
 - [ ] `CORS_ORIGIN` inclut les deux domaines Vercel (frontend + admin)
 - [ ] `ADMIN_BOOTSTRAP_EMAIL` utilisé puis retiré
 - [ ] Health check backend configuré sur `/api/health`

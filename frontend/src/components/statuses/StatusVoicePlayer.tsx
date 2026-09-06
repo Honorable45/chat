@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { PauseIcon, PlayIcon } from "@/components/icons";
+import { resolveMediaSrc } from "@/lib/api";
 import { formatDuration } from "@/lib/format";
 import { getAccessToken } from "@/lib/token-store";
 
@@ -20,7 +21,10 @@ export function StatusVoicePlayer({ src, onEnded }: { src: string; onEnded?: () 
     let cancelled = false;
     const token = getAccessToken();
 
-    fetch(src, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })
+    // `src` (current.mediaUrl du DTO statut) peut être un chemin relatif
+    // (`/api/...`) : un fetch direct se résoudrait contre l'origine du
+    // FRONTEND, pas celle du backend — voir resolveMediaSrc/useAuthenticatedBlobUrl.
+    fetch(resolveMediaSrc(src) ?? src, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })
       .then((res) => {
         if (!res.ok) throw new Error(String(res.status));
         return res.blob();

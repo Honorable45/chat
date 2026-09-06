@@ -38,17 +38,36 @@ export interface CallHistoryEntry {
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/api";
 
 /**
- * `avatarUrl` renvoyé par le backend est soit une URL externe complète
- * (saisie à la main), soit un chemin relatif interne (`/api/users/:id/
- * avatar`, pour un avatar téléversé — voir resolveAvatarUrl côté backend) :
- * ce dernier doit être préfixé par l'origine du backend, jamais utilisé tel
- * quel dans un <img src>, sans quoi il se résoudrait contre l'origine du
- * frontend. Les URLs externes, elles, passent inchangées.
+ * Une URL de média renvoyée par le backend (avatar, pièce jointe, média de
+ * statut...) est soit déjà absolue — une URL externe saisie à la main, ou
+ * un lien Cloudinary direct (signé pour un message/statut, public pour un
+ * avatar — voir CloudinaryProvider côté backend), auquel cas elle passe
+ * inchangée — soit un chemin relatif interne (`/api/...`, servi par ce
+ * backend lui-même) qui doit être préfixé par son origine, jamais utilisé
+ * tel quel dans un <img src>/<video src>, sans quoi il se résoudrait contre
+ * l'origine du frontend.
  */
-export function resolveAvatarSrc(avatarUrl: string | null | undefined): string | null {
-  if (!avatarUrl) return null;
-  if (!avatarUrl.startsWith("/")) return avatarUrl;
-  return `${new URL(API_URL).origin}${avatarUrl}`;
+export function resolveMediaSrc(url: string | null | undefined): string | null {
+  if (!url) return null;
+  if (!url.startsWith("/")) return url;
+  return `${new URL(API_URL).origin}${url}`;
+}
+
+/** Origine de ce backend (ex. "http://localhost:4000") — jamais celle du frontend. */
+export const API_ORIGIN = new URL(API_URL).origin;
+
+/**
+ * Une URL de média (relative OU déjà absolue, voir resolveMediaSrc) pointe-t-elle
+ * vers CE backend, donc protégée par JwtAuthGuard et à récupérer en Blob
+ * authentifié — par opposition à un lien Cloudinary/externe déjà public,
+ * chargeable tel quel dans un <img>/<video> classique ? Ne jamais se fier à
+ * "l'URL est absolue" seul : `api.messages.attachmentUrl`/`api.statuses.mediaUrl`
+ * construisent aussi des URLs absolues vers ce même backend (bug réel
+ * constaté en vérification live : une pièce jointe LOCAL absolutisée était
+ * alors prise pour un lien public et chargée sans authentification).
+ */
+export function isOwnBackendUrl(url: string): boolean {
+  return url.startsWith("/") || url.startsWith(API_ORIGIN);
 }
 
 export class ApiError extends Error {

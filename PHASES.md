@@ -2243,23 +2243,131 @@ réel à cette étape, jamais anticipés par relecture seule.
 Backend : build Docker réel (`podman build`), conteneur démarré et testé
 par de vraies requêtes HTTP contre la base de développement existante.
 
+## Déploiement sans Docker (Railway/Render en mode buildpack)
+
+Décision ultérieure : pas de Docker pour le déploiement du backend. Les
+plateformes buildpack/Nixpacks (`npm ci` + `npm run build` + une commande de
+démarrage, sans Dockerfile) peuvent élaguer les devDependencies avant ou
+après le démarrage du runtime — même risque déjà rencontré côté Docker
+(voir la note sur `prisma`/`dotenv` ci-dessus), mais cette fois sans étage
+de build isolé pour le contourner :
+- `prisma` et `dotenv` déplacés de `devDependencies` vers `dependencies`
+  dans `backend/package.json` — même raisonnement que pour le Dockerfile :
+  tous deux nécessaires au runtime (`migrate deploy` au démarrage,
+  `prisma.config.ts` qui charge `dotenv`), pas seulement en développement.
+- `"postinstall": "prisma generate"` ajouté aux scripts : garantit que
+  `prisma generate` tourne après tout `npm install`/`npm ci`, quelle que
+  soit la commande de build configurée sur la plateforme — jamais dépendant
+  d'une Build Command correctement renseignée.
+
+Vérifié par une simulation d'installation propre complète : `rm -rf
+node_modules dist && npm ci` (le postinstall s'est bien déclenché) → `npm
+run build` → `npx prisma migrate deploy` (aucune migration en attente) →
+`npm run start:prod` contre la vraie base de développement — `/api/health`
+et `/api/languages` ont répondu 200.
+
+## Migration du stockage image/vidéo/avatar vers Cloudinary
+
+Contexte : tout média (avatars, images, vidéos, messages vocaux) était
+écrit sur le disque du serveur (`StorageService`, driver `local` seul
+implémenté) — bloquant sur un PaaS au système de fichiers éphémère (voir
+la section stockage ci-dessus). Décision : Cloudinary pour les images/
+vidéos/avatars ; les messages vocaux restent sur le disque local dans tous
+les cas.
+
+- **Discriminant de provider, pas de nouvelle colonne de valeur** :
+  `enum MediaStorageProvider { LOCAL CLOUDINARY }` sur `Attachment`,
+  `Status` et `Profile` — le champ existant (`url`/`mediaStorageKey`/
+  `avatarStorageKey`) continue de porter la référence, une clé locale ou un
+  `public_id` Cloudinary selon le provider apparié. Toutes les lignes
+  existantes restent `LOCAL`, migration sans risque.
+- **`CloudinaryProvider`** (nouveau, `src/uploads/`) : même forme
+  qu'un fournisseur IA interchangeable (`isConfigured()`, jamais de mock
+  affiché comme réel) — sans les 3 variables `CLOUDINARY_CLOUD_NAME`/
+  `API_KEY`/`API_SECRET`, tout continue sur `StorageService` comme avant.
+  URLs signées à durée limitée (6h par défaut) pour les médias de
+  messages/statuts (protégés par appartenance à la conversation), URL
+  publique non signée pour les avatars (déjà publics par nature, route hors
+  `JwtAuthGuard`).
+- **Bug réel trouvé en vérification live (pas en relecture)** : uploader
+  vers Cloudinary dès `isConfigured()` (3 variables de base) sans vérifier
+  la présence de `CLOUDINARY_AUTH_TOKEN_KEY` créait une pièce jointe
+  CLOUDINARY dont l'URL signée ne pourrait jamais être générée —
+  `getSignedUrl` échoue explicitement (503) par design (jamais un lien non
+  protégé), mais l'upload et l'enregistrement en base avaient déjà eu lieu
+  *avant* cet échec : la pièce jointe restait en base, CLOUDINARY, à jamais
+  illisible, et *toute* lecture ultérieure de la conversation (pas
+  seulement ce message) échouait en cascade avec la même 503. Corrigé par
+  une gate plus stricte, `isConfiguredForSignedMedia()` (3 variables de
+  base **et** la clé de jeton), utilisée par `MessagesService.saveMediaFile`
+  et `StatusesService.create` (jamais par les avatars, qui n'ont pas besoin
+  de signature) — impossible désormais de créer une pièce jointe CLOUDINARY
+  qui ne pourrait jamais produire d'URL.
+- **Second bug réel trouvé au même moment, côté frontend** : plusieurs
+  emplacements (`MessageBubble`, `InfoPanel`, `StatusViewer`)
+  reconstruisaient l'URL d'affichage d'un média depuis son seul ID
+  (`api.messages.attachmentUrl(id)`/`api.statuses.mediaUrl(id)`) au lieu de
+  faire confiance au champ `url`/`mediaUrl` déjà résolu par le DTO —
+  aurait complètement cassé l'affichage d'un média Cloudinary (l'URL
+  reconstruite pointe toujours vers la route proxy locale, qui refuse
+  désormais explicitement de servir une pièce CLOUDINARY). Corrigé en
+  utilisant partout la valeur du DTO. Un correctif plus profond était
+  nécessaire en cascade : `AuthenticatedImage`/`AuthenticatedVideo` (et
+  leurs équivalents `VideoThumbnail`/`MediaTileVideo`) décidaient si un
+  média nécessite un Blob authentifié en testant seulement "l'URL est-elle
+  absolue ?" — or plusieurs endroits du code construisent des URLs
+  *backend* déjà absolues (`${API_URL}/...`), pas seulement Cloudinary ;
+  une telle URL prenait alors à tort le chemin "public", était chargée par
+  un `<img>`/`<video>` simple sans en-tête d'autorisation, et était bloquée
+  par la `Cross-Origin-Resource-Policy` du backend. Remplacé par
+  `isOwnBackendUrl()` (`frontend/src/lib/api.ts`), qui compare l'origine de
+  l'URL à celle du backend plutôt que de tester seulement si elle est
+  absolue — correct que l'appelant passe un chemin relatif ou déjà
+  résolu en absolu.
+- Voir aussi `backend/.env.example` (nouvelle section Cloudinary) et
+  `DEPLOYMENT.md` (l'alerte "stockage éphémère" ne concerne plus que les
+  messages vocaux une fois Cloudinary configuré).
+
+### Vérifications effectuées
+
+Backend : 104 tests dédiés (CloudinaryProvider, MessagesService,
+StatusesService, ProfilesService) + suite complète (319 tests, 28 suites),
+tous verts. Live, avec de vrais identifiants Cloudinary fournis par
+l'utilisateur (compte réel, pas un mock) : upload réel d'un avatar, URL
+Cloudinary publique récupérée et vérifiée octet pour octet identique au
+fichier envoyé. Le chemin URL signée (images/vidéos de messages/statuts)
+n'a en revanche pas pu être vérifié en conditions réelles faute de
+`CLOUDINARY_AUTH_TOKEN_KEY` (clé à générer manuellement dans le Dashboard
+Cloudinary, impossible à créer par API) — comportement de repli sur
+`StorageService` vérifié à la place (comportement attendu et correct tant
+que cette clé n'est pas renseignée). Frontend : `tsc --noEmit`, `eslint`,
+`next build` propres ; vérification par navigateur réel (Puppeteer) d'une
+conversation complète — envoi d'image (LOCAL), upload d'avatar (CLOUDINARY
+réel), affichage correct dans la bulle de message et dans la grille
+"Médias partagés" du panneau d'infos.
+
 ## Prochaine étape
 
 Les 8 items de la spécification NEXORA sont posés et vérifiés, une passe
 de stabilisation post-spécification, un audit de sécurité avec correction
 des deux constats prioritaires, un correctif de responsivité mobile, la
-partie admin (rôle, signalement, modération, tableau de bord), et la
-préparation au déploiement (ci-dessus). Hors périmètre, resté noté au fil
-de l'eau : mise à niveau ElevenLabs pour activer réellement la synthèse
-vocale traduite ; nouvelle tentative de vérification live par navigateur
-pour la propagation de lecture multi-appareils (item 7) si l'environnement
-de test se stabilise (la logique serveur, elle, est prouvée par de vrais
-tests e2e par sockets) ; périmètre de "Discussions vocales" (rooms
-vocales) jamais défini, resté hors de "l'essentiel" pour cette passe ;
-constats faibles de l'audit de sécurité (Swagger sans authentification,
-JWT en localStorage côté frontend, absence d'en-tête anti-clickjacking,
-accès token vivant jusqu'à expiration après déconnexion, coût de
-`resetPassword` proportionnel au nombre de tokens actifs) ; taxonomie de
-motifs de signalement prédéfinis (actuellement un simple champ texte
-libre) ; driver de stockage S3-compatible (nécessaire pour un déploiement
-réel sur un système de fichiers éphémère, voir DEPLOYMENT.md).
+partie admin (rôle, signalement, modération, tableau de bord), la
+préparation au déploiement (Docker puis pivot buildpack sans Docker), et
+la migration du stockage image/vidéo/avatar vers Cloudinary (ci-dessus).
+Hors périmètre, resté noté au fil de l'eau : mise à niveau ElevenLabs pour
+activer réellement la synthèse vocale traduite ; nouvelle tentative de
+vérification live par navigateur pour la propagation de lecture
+multi-appareils (item 7) si l'environnement de test se stabilise (la
+logique serveur, elle, est prouvée par de vrais tests e2e par sockets) ;
+périmètre de "Discussions vocales" (rooms vocales) jamais défini, resté
+hors de "l'essentiel" pour cette passe ; constats faibles de l'audit de
+sécurité (Swagger sans authentification, JWT en localStorage côté
+frontend, absence d'en-tête anti-clickjacking, accès token vivant jusqu'à
+expiration après déconnexion, coût de `resetPassword` proportionnel au
+nombre de tokens actifs) ; taxonomie de motifs de signalement prédéfinis
+(actuellement un simple champ texte libre) ; driver de stockage
+S3-compatible pour les messages vocaux (seul média encore concerné par le
+stockage éphémère une fois Cloudinary configuré, voir DEPLOYMENT.md) ;
+`CLOUDINARY_AUTH_TOKEN_KEY` jamais renseignée dans cet environnement (à
+générer dans le Dashboard Cloudinary), donc chemin URL signée
+images/vidéos non vérifié en conditions réelles.

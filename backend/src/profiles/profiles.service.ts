@@ -7,6 +7,7 @@ import {
   IMAGE_EXTENSION_TO_MIME_TYPE,
   MAX_IMAGE_SIZE_BYTES,
 } from '../uploads/media-upload.constants';
+import { CloudinaryProvider } from '../uploads/cloudinary.provider';
 import { matchesFileSignature } from '../uploads/file-signature.util';
 import { StorageService } from '../uploads/storage.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -21,7 +22,16 @@ export class ProfilesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
+    private readonly cloudinary: CloudinaryProvider,
   ) {}
+
+  private async deleteAvatarFile(key: string, provider: 'LOCAL' | 'CLOUDINARY'): Promise<void> {
+    if (provider === 'CLOUDINARY') {
+      await this.cloudinary.delete(key, 'image', 'upload');
+    } else {
+      await this.storage.delete(key);
+    }
+  }
 
   findByUserId(userId: string): Promise<Profile | null> {
     return this.prisma.profile.findUnique({ where: { userId } });
@@ -43,8 +53,9 @@ export class ProfilesService {
     if (dto.avatarUrl !== undefined) {
       const previous = await this.prisma.profile.findUnique({ where: { userId } });
       if (previous?.avatarStorageKey) {
-        await this.storage.delete(previous.avatarStorageKey);
+        await this.deleteAvatarFile(previous.avatarStorageKey, previous.avatarStorageProvider);
         data.avatarStorageKey = null;
+        data.avatarStorageProvider = 'LOCAL';
       }
     }
 
@@ -79,22 +90,36 @@ export class ProfilesService {
     }
 
     const previous = await this.prisma.profile.findUnique({ where: { userId } });
-    const stored = await this.storage.save(file.buffer, 'avatar', extension);
+
+    // Cloudinary si configuré (upload public, jamais signé — un avatar l'est
+    // déjà par nature, voir CloudinaryProvider.uploadPublic), sinon le
+    // disque local comme avant.
+    const { key, provider } = this.cloudinary.isConfigured()
+      ? await this.cloudinary
+          .uploadPublic(file.buffer, 'avatar')
+          .then((uploaded) => ({ key: uploaded.publicId, provider: 'CLOUDINARY' as const }))
+      : await this.storage
+          .save(file.buffer, 'avatar', extension)
+          .then((stored) => ({ key: stored.key, provider: 'LOCAL' as const }));
+
     if (previous?.avatarStorageKey) {
-      await this.storage.delete(previous.avatarStorageKey);
+      await this.deleteAvatarFile(previous.avatarStorageKey, previous.avatarStorageProvider);
     }
 
     return this.prisma.profile.update({
       where: { userId },
-      data: { avatarStorageKey: stored.key, avatarUrl: null },
+      data: { avatarStorageKey: key, avatarStorageProvider: provider, avatarUrl: null },
     });
   }
 
   async removeAvatar(userId: string): Promise<void> {
     const profile = await this.prisma.profile.findUnique({ where: { userId } });
     if (!profile?.avatarStorageKey) return; // rien à faire : idempotent
-    await this.storage.delete(profile.avatarStorageKey);
-    await this.prisma.profile.update({ where: { userId }, data: { avatarStorageKey: null } });
+    await this.deleteAvatarFile(profile.avatarStorageKey, profile.avatarStorageProvider);
+    await this.prisma.profile.update({
+      where: { userId },
+      data: { avatarStorageKey: null, avatarStorageProvider: 'LOCAL' },
+    });
   }
 
   /** Public (voir UserAvatarController, non protégé par JwtAuthGuard) : un avatar n'est pas une donnée sensible. */
@@ -102,6 +127,12 @@ export class ProfilesService {
     const profile = await this.prisma.profile.findUnique({ where: { userId } });
     if (!profile?.avatarStorageKey) {
       throw new NotFoundException('Avatar introuvable.');
+    }
+    if (profile.avatarStorageProvider !== 'LOCAL') {
+      // Ne devrait jamais être atteint en usage normal — resolveAvatarUrl
+      // renvoie directement l'URL Cloudinary publique, jamais ce chemin
+      // proxy, pour un avatar CLOUDINARY (voir avatar.util.ts).
+      throw new NotFoundException('Cet avatar ne se sert plus par cette route.');
     }
     if (!(await this.storage.exists(profile.avatarStorageKey))) {
       throw new NotFoundException('Fichier introuvable.');

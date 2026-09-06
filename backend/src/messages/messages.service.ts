@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { ReadStream } from 'node:fs';
-import { Message, Prisma } from '@prisma/client';
+import { Message, MediaStorageProvider, Prisma } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PresenceService } from '../presence/presence.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -17,6 +17,7 @@ import {
   MAX_MEDIA_ALBUM_ITEMS,
   MAX_VIDEO_SIZE_BYTES,
 } from '../uploads/media-upload.constants';
+import { CloudinaryProvider } from '../uploads/cloudinary.provider';
 import { matchesFileSignature } from '../uploads/file-signature.util';
 import { StorageService } from '../uploads/storage.service';
 import { EventsGateway } from '../websocket/events.gateway';
@@ -60,6 +61,11 @@ const MEDIA_PREVIEW_PAGE_SIZE = 8;
 const MESSAGE_READS_SELECT = { userId: true, readAt: true } satisfies Prisma.MessageReadSelect;
 const MESSAGE_ATTACHMENTS_SELECT = {
   id: true,
+  // "url" ne contient pas une vraie URL malgré son nom (voir schema.prisma) :
+  // une clé de fichier local ou un public_id Cloudinary selon storageProvider
+  // — nécessaire ici pour que toAttachmentDto sache générer le bon lien.
+  url: true,
+  storageProvider: true,
   mimeType: true,
   sizeBytes: true,
   type: true,
@@ -78,6 +84,8 @@ const MESSAGE_INCLUDE = {
 
 type MessageAttachment = {
   id: string;
+  url: string;
+  storageProvider: MediaStorageProvider;
   mimeType: string;
   sizeBytes: number;
   type: 'IMAGE' | 'VIDEO';
@@ -92,7 +100,7 @@ type MessageWithReads = Message & {
   attachments?: MessageAttachment[];
 };
 
-function toMessageDto(message: MessageWithReads) {
+function toMessageDto(message: MessageWithReads, cloudinary: CloudinaryProvider) {
   return {
     id: message.id,
     conversationId: message.conversationId,
@@ -110,15 +118,21 @@ function toMessageDto(message: MessageWithReads) {
     readAt: message.reads[0]?.readAt ?? null,
     // URL authentifiée, jamais la clé de stockage interne (même principe que
     // VoiceService/StatusesService) — vide pour un message sans pièce jointe.
-    attachments: (message.attachments ?? []).map(toAttachmentDto),
+    attachments: (message.attachments ?? []).map((a) => toAttachmentDto(a, cloudinary)),
     createdAt: message.createdAt,
   };
 }
 
-function toAttachmentDto(a: MessageAttachment) {
+function toAttachmentDto(a: MessageAttachment, cloudinary: CloudinaryProvider) {
   return {
     id: a.id,
-    url: `/api/messages/attachments/${a.id}`,
+    // CLOUDINARY : lien signé à durée limitée, recalculé à chaque appel —
+    // jamais mis en cache au-delà de cette réponse (voir CloudinaryProvider.
+    // getSignedUrl). LOCAL : chemin proxy inchangé, streamé via streamAttachment.
+    url:
+      a.storageProvider === 'CLOUDINARY'
+        ? cloudinary.getSignedUrl(a.url, a.type === 'VIDEO' ? 'video' : 'image')
+        : `/api/messages/attachments/${a.id}`,
     mimeType: a.mimeType,
     sizeBytes: a.sizeBytes,
     type: a.type,
@@ -145,7 +159,51 @@ export class MessagesService {
     private readonly presence: PresenceService,
     private readonly notifications: NotificationsService,
     private readonly storage: StorageService,
+    private readonly cloudinary: CloudinaryProvider,
   ) {}
+
+  /**
+   * Upload d'une image/vidéo — Cloudinary si configuré, sinon le disque
+   * local comme avant (voir CloudinaryProvider, jamais un cutover forcé).
+   * Jamais utilisé pour un vocal, qui reste toujours sur StorageService.
+   *
+   * isConfiguredForSignedMedia() (pas isConfigured()) : ces pièces jointes
+   * produisent toujours une URL SIGNÉE (toAttachmentDto), qui échoue sans
+   * CLOUDINARY_AUTH_TOKEN_KEY — uploader quand même créerait une pièce
+   * jointe à jamais illisible.
+   */
+  private async saveMediaFile(
+    buffer: Buffer,
+    extension: string,
+    resourceType: 'image' | 'video',
+  ): Promise<{ key: string; sizeBytes: number; storageProvider: MediaStorageProvider }> {
+    if (this.cloudinary.isConfiguredForSignedMedia()) {
+      const uploaded = await this.cloudinary.upload(buffer, 'attachment', resourceType);
+      return {
+        key: uploaded.publicId,
+        sizeBytes: buffer.byteLength,
+        storageProvider: 'CLOUDINARY',
+      };
+    }
+    const stored = await this.storage.save(buffer, 'attachment', extension);
+    return { key: stored.key, sizeBytes: stored.sizeBytes, storageProvider: 'LOCAL' };
+  }
+
+  private async deleteMediaFile(attachment: {
+    url: string;
+    storageProvider: MediaStorageProvider;
+    type: 'IMAGE' | 'VIDEO';
+  }): Promise<void> {
+    if (attachment.storageProvider === 'CLOUDINARY') {
+      await this.cloudinary.delete(
+        attachment.url,
+        attachment.type === 'VIDEO' ? 'video' : 'image',
+        'authenticated',
+      );
+    } else {
+      await this.storage.delete(attachment.url);
+    }
+  }
 
   async send(userId: string, dto: CreateMessageDto): Promise<MessageDto> {
     await this.assertMembership(userId, dto.conversationId);
@@ -188,7 +246,7 @@ export class MessagesService {
       }),
     ]);
 
-    this.events.emitToUsers(recipients, 'message:new', toMessageDto(message));
+    this.events.emitToUsers(recipients, 'message:new', toMessageDto(message, this.cloudinary));
 
     // Centre de notifications (badge, historique) — indépendant de la
     // diffusion temps réel ci-dessus : reste utile même si le destinataire
@@ -204,7 +262,7 @@ export class MessagesService {
       ),
     );
 
-    return toMessageDto(message);
+    return toMessageDto(message, this.cloudinary);
   }
 
   async sendImage(
@@ -251,11 +309,11 @@ export class MessagesService {
     const recipients = await this.otherMemberIds(dto.conversationId, userId);
     const deliveredAt = recipients.some((id) => this.presence.isOnline(id)) ? new Date() : null;
 
-    // Enregistré sur disque avant l'écriture en base (même ordre que
-    // VoiceService/StatusesService) : en cas d'échec de la transaction, un
-    // fichier orphelin sur disque est un moindre mal qu'une ligne en base
-    // pointant vers un fichier qui n'a jamais été écrit.
-    const stored = await this.storage.save(file.buffer, 'attachment', extension);
+    // Enregistré sur disque/Cloudinary avant l'écriture en base (même ordre
+    // que VoiceService/StatusesService) : en cas d'échec de la transaction,
+    // un fichier orphelin est un moindre mal qu'une ligne en base pointant
+    // vers un fichier qui n'a jamais été écrit.
+    const stored = await this.saveMediaFile(file.buffer, extension, 'image');
 
     const [message] = await this.prisma.$transaction([
       this.prisma.message.create({
@@ -271,9 +329,11 @@ export class MessagesService {
               ownerId: userId,
               // Champ historiquement nommé "url" en base (schéma jamais
               // migré vers *StorageKey comme VoiceMessage/Status — voir
-              // PHASES.md) : contient en réalité une clé de stockage
-              // interne, jamais exposée telle quelle (voir toMessageDto).
+              // PHASES.md) : contient en réalité une clé de stockage locale
+              // ou un public_id Cloudinary selon storageProvider, jamais
+              // exposée telle quelle (voir toMessageDto).
               url: stored.key,
+              storageProvider: stored.storageProvider,
               mimeType: file.mimetype,
               sizeBytes: stored.sizeBytes,
             },
@@ -287,7 +347,7 @@ export class MessagesService {
       }),
     ]);
 
-    this.events.emitToUsers(recipients, 'message:new', toMessageDto(message));
+    this.events.emitToUsers(recipients, 'message:new', toMessageDto(message, this.cloudinary));
 
     await Promise.all(
       recipients.map((recipientId) =>
@@ -300,7 +360,7 @@ export class MessagesService {
       ),
     );
 
-    return toMessageDto(message);
+    return toMessageDto(message, this.cloudinary);
   }
 
   /**
@@ -369,21 +429,26 @@ export class MessagesService {
     const deliveredAt = recipients.some((id) => this.presence.isOnline(id)) ? new Date() : null;
     const metaByIndex = readMeta(dto.meta, files.length);
 
-    // Enregistrés sur disque avant l'écriture en base (même ordre que pour
-    // un message IMAGE seul) : en cas d'échec de la transaction, des
-    // fichiers orphelins sur disque sont un moindre mal qu'une ligne en
-    // base pointant vers un fichier jamais écrit.
+    // Enregistrés sur disque/Cloudinary avant l'écriture en base (même
+    // ordre que pour un message IMAGE seul) : en cas d'échec de la
+    // transaction, des fichiers orphelins sont un moindre mal qu'une ligne
+    // en base pointant vers un fichier jamais écrit.
     const stored = await Promise.all(
       files.map(async (file, index) => {
         const isVideo = Boolean(ALLOWED_VIDEO_MIME_TYPES[file.mimetype]);
         const extension = isVideo
           ? ALLOWED_VIDEO_MIME_TYPES[file.mimetype]
           : ALLOWED_IMAGE_MIME_TYPES[file.mimetype];
-        const savedFile = await this.storage.save(file.buffer, 'attachment', extension);
+        const savedFile = await this.saveMediaFile(
+          file.buffer,
+          extension,
+          isVideo ? 'video' : 'image',
+        );
         const meta = metaByIndex[index] ?? {};
         return {
           ownerId: userId,
           url: savedFile.key,
+          storageProvider: savedFile.storageProvider,
           mimeType: file.mimetype,
           sizeBytes: savedFile.sizeBytes,
           type: isVideo ? ('VIDEO' as const) : ('IMAGE' as const),
@@ -416,7 +481,7 @@ export class MessagesService {
       }),
     ]);
 
-    this.events.emitToUsers(recipients, 'message:new', toMessageDto(message));
+    this.events.emitToUsers(recipients, 'message:new', toMessageDto(message, this.cloudinary));
 
     const videoCount = stored.filter((a) => a.type === 'VIDEO').length;
     const preview =
@@ -433,7 +498,7 @@ export class MessagesService {
       ),
     );
 
-    return toMessageDto(message);
+    return toMessageDto(message, this.cloudinary);
   }
 
   /** Streame une pièce jointe — réservé aux membres actifs de la conversation du message parent (section 23). */
@@ -446,6 +511,15 @@ export class MessagesService {
       throw new NotFoundException('Pièce jointe introuvable.');
     }
     await this.assertMembership(userId, attachment.message.conversationId);
+
+    if (attachment.storageProvider !== 'LOCAL') {
+      // Ne devrait jamais être atteint en usage normal : toAttachmentDto
+      // renvoie directement l'URL Cloudinary signée, jamais ce chemin proxy,
+      // pour une pièce jointe CLOUDINARY. Un lien resté en cache après
+      // migration d'une pièce jointe, par exemple, tombe ici plutôt que de
+      // tenter de lire un public_id Cloudinary comme une clé de fichier local.
+      throw new NotFoundException('Cette pièce jointe ne se sert plus par cette route.');
+    }
 
     if (!(await this.storage.exists(attachment.url))) {
       throw new NotFoundException('Fichier introuvable.');
@@ -477,7 +551,7 @@ export class MessagesService {
     // Renvoyés dans l'ordre chronologique (le plus ancien d'abord) : c'est
     // l'ordre d'affichage attendu par le frontend.
     return {
-      items: page.reverse().map(toMessageDto),
+      items: page.reverse().map((m) => toMessageDto(m, this.cloudinary)),
       nextCursor: nextCursor ?? null,
     };
   }
@@ -515,7 +589,7 @@ export class MessagesService {
     const page = hasMore ? rows.slice(0, limit) : rows;
 
     return {
-      items: page.map(toAttachmentDto),
+      items: page.map((a) => toAttachmentDto(a, this.cloudinary)),
       nextCursor: hasMore ? (page[page.length - 1]?.id ?? null) : null,
     };
   }
@@ -552,7 +626,7 @@ export class MessagesService {
     const page = hasMore ? rows.slice(0, limit) : rows;
 
     return {
-      items: page.map(toMessageDto),
+      items: page.map((m) => toMessageDto(m, this.cloudinary)),
       nextCursor: hasMore ? (page[page.length - 1]?.id ?? null) : null,
     };
   }
@@ -601,7 +675,7 @@ export class MessagesService {
     return {
       // Ordre chronologique (le plus ancien d'abord), comme list() —
       // `olderPage` est descendant, on le renverse ; `newer` est déjà ascendant.
-      items: [...olderPage.reverse(), ...newer].map(toMessageDto),
+      items: [...olderPage.reverse(), ...newer].map((m) => toMessageDto(m, this.cloudinary)),
       matchedMessageId: messageId,
       hasOlder,
     };
@@ -617,16 +691,16 @@ export class MessagesService {
     });
 
     const recipients = await this.otherMemberIds(message.conversationId, userId);
-    this.events.emitToUsers(recipients, 'message:updated', toMessageDto(updated));
+    this.events.emitToUsers(recipients, 'message:updated', toMessageDto(updated, this.cloudinary));
 
-    return toMessageDto(updated);
+    return toMessageDto(updated, this.cloudinary);
   }
 
   async remove(userId: string, messageId: string): Promise<MessageDto> {
     const message = await this.requireOwnedMessage(userId, messageId, 'supprimer');
 
     if (message.deletedAt) {
-      return toMessageDto({ ...message, reads: [] }); // déjà supprimé : idempotent
+      return toMessageDto({ ...message, reads: [] }, this.cloudinary); // déjà supprimé : idempotent
     }
 
     const updated = await this.prisma.message.update({
@@ -637,10 +711,10 @@ export class MessagesService {
 
     // Fichier(s) effacés après la mise à jour en base (même ordre que
     // VoiceService.remove) : jamais de fichier référencé par une ligne qui
-    // n'existe plus côté suppression, best-effort si le disque échoue.
+    // n'existe plus côté suppression, best-effort si le stockage échoue.
     if ((updated.attachments ?? []).length > 0) {
       const attachments = await this.prisma.attachment.findMany({ where: { messageId } });
-      await Promise.all(attachments.map((a) => this.storage.delete(a.url)));
+      await Promise.all(attachments.map((a) => this.deleteMediaFile(a)));
     }
 
     const recipients = await this.otherMemberIds(message.conversationId, userId);
@@ -649,7 +723,7 @@ export class MessagesService {
       conversationId: updated.conversationId,
     });
 
-    return toMessageDto(updated);
+    return toMessageDto(updated, this.cloudinary);
   }
 
   /**
@@ -676,7 +750,7 @@ export class MessagesService {
 
     if ((updated.attachments ?? []).length > 0) {
       const attachments = await this.prisma.attachment.findMany({ where: { messageId } });
-      await Promise.all(attachments.map((a) => this.storage.delete(a.url)));
+      await Promise.all(attachments.map((a) => this.deleteMediaFile(a)));
     }
 
     const members = await this.prisma.conversationMember.findMany({

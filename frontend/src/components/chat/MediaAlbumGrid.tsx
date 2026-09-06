@@ -4,6 +4,7 @@ import { useState } from "react";
 import { AuthenticatedImage } from "@/components/AuthenticatedImage";
 import { ExpandIcon, PlayIcon } from "@/components/icons";
 import { MediaGalleryLightbox, type GalleryItem } from "@/components/MediaGalleryLightbox";
+import { isOwnBackendUrl } from "@/lib/api";
 import { formatDuration } from "@/lib/format";
 import { useAuthenticatedBlobUrl } from "@/lib/use-authenticated-blob-url";
 import type { MessageAttachment } from "@/lib/types";
@@ -18,29 +19,60 @@ const MAX_VISIBLE = 4;
 /** Vignette vidéo : un `<video>` sans lecture (juste assez de données
  * chargées pour afficher une image réelle de la première image du fichier,
  * jamais une miniature générée côté serveur — voir MessagesService.sendMedia,
- * aucun ffmpeg disponible) plus une icône lecture et la durée réelle. */
+ * aucun ffmpeg disponible) plus une icône lecture et la durée réelle.
+ * Une pièce jointe Cloudinary (voir CloudinaryProvider.getSignedUrl) est
+ * chargeable directement, jamais besoin du détour par un Blob authentifié
+ * dans ce cas — reconnue via isOwnBackendUrl, même exception que dans
+ * AuthenticatedVideo (jamais un simple test "URL absolue", voir son
+ * commentaire). */
 function VideoThumbnail({ attachment, className }: { attachment: MessageAttachment; className: string }) {
+  if (!isOwnBackendUrl(attachment.url)) {
+    return <VideoThumbnailFrame url={attachment.url} durationSeconds={attachment.durationSeconds} className={className} />;
+  }
+  return <VideoThumbnailProxy attachment={attachment} className={className} />;
+}
+
+function VideoThumbnailProxy({ attachment, className }: { attachment: MessageAttachment; className: string }) {
   const { url, failed } = useAuthenticatedBlobUrl(attachment.url);
-  return (
-    <div className={`relative ${className}`}>
-      {failed ? (
+  if (failed) {
+    return (
+      <div className={`relative ${className}`}>
         <span className="flex h-full w-full items-center justify-center bg-surface text-xs text-muted">
           Vidéo indisponible
         </span>
-      ) : !url ? (
+      </div>
+    );
+  }
+  if (!url) {
+    return (
+      <div className={`relative ${className}`}>
         <span className="flex h-full w-full items-center justify-center bg-surface">
           <span className="h-6 w-6 animate-spin rounded-full border-2 border-muted border-t-transparent" />
         </span>
-      ) : (
-         
-        <video src={url} className="h-full w-full object-cover" muted playsInline preload="metadata" />
-      )}
+      </div>
+    );
+  }
+  return <VideoThumbnailFrame url={url} durationSeconds={attachment.durationSeconds} className={className} />;
+}
+
+function VideoThumbnailFrame({
+  url,
+  durationSeconds,
+  className,
+}: {
+  url: string;
+  durationSeconds: number | null;
+  className: string;
+}) {
+  return (
+    <div className={`relative ${className}`}>
+      <video src={url} className="h-full w-full object-cover" muted playsInline preload="metadata" />
       <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/15">
         <PlayIcon size={20} className="text-white drop-shadow" />
       </span>
-      {attachment.durationSeconds != null && (
+      {durationSeconds != null && (
         <span className="absolute right-1 bottom-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-white">
-          {formatDuration(attachment.durationSeconds)}
+          {formatDuration(durationSeconds)}
         </span>
       )}
     </div>

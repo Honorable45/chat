@@ -133,6 +133,7 @@ model Profile {
   // information sensible). Prioritaire sur avatarUrl quand les deux sont
   // renseignés — voir resolveAvatarUrl().
   avatarStorageKey String?
+  avatarStorageProvider MediaStorageProvider @default(LOCAL)
   statusText String?
 
   // Consentement explicite pour utiliser la voix de l'utilisateur dans les
@@ -403,9 +404,13 @@ model Attachment {
   ownerId   String
   owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
 
+  // Selon storageProvider : une clé de fichier local (StorageService) ou un
+  // `public_id` Cloudinary — jamais une vraie URL malgré le nom du champ
+  // (conservé tel quel, une migration de valeur n'apporterait rien).
   url       String
   mimeType  String
   sizeBytes Int
+  storageProvider MediaStorageProvider @default(LOCAL)
 
   // Champs d'un album multi-médias (type de message MEDIA_ALBUM) — un
   // message TEXT/IMAGE historique n'en a jamais eu besoin, tous nullables.
@@ -434,6 +439,19 @@ model Attachment {
 enum AttachmentType {
   IMAGE
   VIDEO
+}
+
+// Stockage interchangeable des médias image/vidéo/avatar (section
+// déploiement : un système de fichiers éphémère perd tout à chaque
+// redéploiement — voir DEPLOYMENT.md). "LOCAL" par défaut, jamais cassé
+// pour les lignes déjà écrites avant l'ajout de Cloudinary — un simple
+// discriminant, pas une nouvelle colonne de valeur (voir Attachment.url/
+// Status.mediaStorageKey/Profile.avatarStorageKey, qui portent la
+// référence quel que soit le provider). Les messages vocaux ne sont
+// jamais concernés, ils restent toujours sur StorageService.
+enum MediaStorageProvider {
+  LOCAL
+  CLOUDINARY
 }
 
 // ---------------------------------------------------------------------------
@@ -586,6 +604,9 @@ model Status {
   // Même principe que VoiceMessage.audioStorageKey : une clé de stockage
   // interne, jamais un chemin exposé — servi via GET /statuses/:id/media.
   mediaStorageKey String?
+  // "LOCAL" toujours pour type=VOICE (jamais Cloudinary, voir
+  // MediaStorageProvider) — seuls IMAGE/VIDEO peuvent valoir CLOUDINARY.
+  mediaStorageProvider MediaStorageProvider @default(LOCAL)
 
   visibility StatusVisibility @default(CONTACTS)
 

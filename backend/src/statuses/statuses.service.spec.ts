@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, NotFoundException } from '@nes
 import type { Profile, Status, User } from '@prisma/client';
 import { ContactsService } from '../contacts/contacts.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { CloudinaryProvider } from '../uploads/cloudinary.provider';
 import { StorageService } from '../uploads/storage.service';
 import { StatusesService } from './statuses.service';
 
@@ -53,6 +54,7 @@ function buildProfile(overrides: Partial<Profile> = {}): Profile {
     userId: 'user-1',
     avatarUrl: null,
     avatarStorageKey: null,
+    avatarStorageProvider: 'LOCAL',
     statusText: null,
     voiceCloningConsent: false,
     voiceCloningUpdatedAt: null,
@@ -76,6 +78,7 @@ function buildStatus(overrides: Partial<Status> = {}) {
     type: 'TEXT' as const,
     text: 'Salut',
     mediaStorageKey: null,
+    mediaStorageProvider: 'LOCAL' as const,
     visibility: 'CONTACTS' as const,
     createdAt: new Date(),
     expiresAt: new Date(Date.now() + 1000 * 60 * 60),
@@ -96,6 +99,13 @@ describe('StatusesService', () => {
     delete: jest.Mock;
   };
   let contacts: { listContactIds: jest.Mock };
+  let cloudinary: {
+    isConfigured: jest.Mock;
+    isConfiguredForSignedMedia: jest.Mock;
+    upload: jest.Mock;
+    getSignedUrl: jest.Mock;
+    delete: jest.Mock;
+  };
   let service: StatusesService;
 
   beforeEach(() => {
@@ -111,10 +121,21 @@ describe('StatusesService', () => {
       delete: jest.fn().mockResolvedValue(undefined),
     };
     contacts = { listContactIds: jest.fn().mockResolvedValue(new Set()) };
+    // Non configuré par défaut : chaque test existant continue de passer
+    // par StorageService (LOCAL) — voir describe('Cloudinary', ...) pour les
+    // tests dédiés à la branche CLOUDINARY (jamais pour type VOICE).
+    cloudinary = {
+      isConfigured: jest.fn().mockReturnValue(false),
+      isConfiguredForSignedMedia: jest.fn().mockReturnValue(false),
+      upload: jest.fn(),
+      getSignedUrl: jest.fn(),
+      delete: jest.fn().mockResolvedValue(undefined),
+    };
     service = new StatusesService(
       prisma as unknown as PrismaService,
       storage as unknown as StorageService,
       contacts as unknown as ContactsService,
+      cloudinary as unknown as CloudinaryProvider,
     );
   });
 
@@ -168,6 +189,74 @@ describe('StatusesService', () => {
       const expiresAtMs = call.data.expiresAt.getTime();
       expect(expiresAtMs).toBeGreaterThanOrEqual(before + 24 * 60 * 60 * 1000 - 1000);
       expect(expiresAtMs).toBeLessThanOrEqual(after + 24 * 60 * 60 * 1000 + 1000);
+    });
+  });
+
+  describe('Cloudinary (images/vidéos, jamais VOICE)', () => {
+    it('utilise Cloudinary pour un statut IMAGE quand configuré', async () => {
+      cloudinary.isConfiguredForSignedMedia.mockReturnValue(true);
+      cloudinary.upload.mockResolvedValue({ publicId: 'glotta/status/abc123' });
+      const created = {
+        ...buildStatus({
+          type: 'IMAGE',
+          mediaStorageKey: 'glotta/status/abc123',
+          mediaStorageProvider: 'CLOUDINARY',
+        }),
+        user: { ...buildUser(), profile: buildProfile() },
+        _count: { views: 0 },
+      };
+      prisma.status.create.mockResolvedValue(created);
+      cloudinary.getSignedUrl.mockReturnValue(
+        'https://res.cloudinary.com/demo/image/authenticated/s--sig--/abc123',
+      );
+
+      const result = await service.create('user-1', { type: 'IMAGE' }, buildFile());
+
+      expect(cloudinary.upload).toHaveBeenCalledWith(expect.any(Buffer), 'status', 'image');
+      expect(storage.save).not.toHaveBeenCalled();
+      expect(result.mediaUrl).toContain('cloudinary.com');
+    });
+
+    it("retombe sur StorageService pour IMAGE/VIDEO quand Cloudinary n'est pas configuré", async () => {
+      cloudinary.isConfiguredForSignedMedia.mockReturnValue(false);
+      const created = {
+        ...buildStatus({ type: 'IMAGE', mediaStorageKey: 'status/abc.jpg' }),
+        user: { ...buildUser(), profile: buildProfile() },
+        _count: { views: 0 },
+      };
+      prisma.status.create.mockResolvedValue(created);
+
+      await service.create('user-1', { type: 'IMAGE' }, buildFile());
+
+      expect(storage.save).toHaveBeenCalled();
+      expect(cloudinary.upload).not.toHaveBeenCalled();
+    });
+
+    it('un statut VOICE reste toujours sur StorageService, même quand Cloudinary est configuré', async () => {
+      cloudinary.isConfiguredForSignedMedia.mockReturnValue(true);
+      const voiceFile = buildFile({
+        mimetype: 'audio/webm',
+        originalname: 'voice.webm',
+        // Signature EBML réelle (voir file-signature.util.ts) — le buffer
+        // par défaut de buildFile() est un JPEG, refusé pour un type audio.
+        buffer: Buffer.from([0x1a, 0x45, 0xdf, 0xa3]),
+      });
+      const created = {
+        ...buildStatus({ type: 'VOICE', mediaStorageKey: 'status/voice.webm' }),
+        user: { ...buildUser(), profile: buildProfile() },
+        _count: { views: 0 },
+      };
+      prisma.status.create.mockResolvedValue(created);
+
+      await service.create('user-1', { type: 'VOICE' }, voiceFile);
+
+      expect(storage.save).toHaveBeenCalled();
+      expect(cloudinary.upload).not.toHaveBeenCalled();
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      const call = prisma.status.create.mock.calls[0][0] as {
+        data: { mediaStorageProvider: string };
+      };
+      expect(call.data.mediaStorageProvider).toBe('LOCAL');
     });
   });
 

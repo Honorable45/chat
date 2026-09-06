@@ -170,7 +170,20 @@ export function MessageBubble({
     );
   }
 
-  const attachmentUrl = message.attachments?.[0] ? api.messages.attachmentUrl(message.attachments[0].id) : null;
+  // L'URL de la pièce jointe vient déjà du DTO (résolue côté serveur selon
+  // son storageProvider — proxy backend ou lien Cloudinary signé, voir
+  // MessagesService.toAttachmentDto) : ne jamais la reconstruire depuis le
+  // seul ID via api.messages.attachmentUrl(), qui suppose à tort un chemin
+  // proxy local et casserait un média hébergé sur Cloudinary. Ne PAS non
+  // plus la passer dans resolveMediaSrc ici : AuthenticatedImage a besoin de
+  // distinguer un chemin relatif (`/api/...`, protégé par JwtAuthGuard, à
+  // récupérer en Blob authentifié) d'une URL déjà absolue (Cloudinary,
+  // publique/signée) — resolveMediaSrc rendrait les deux absolus et lui
+  // ferait perdre cette distinction (bug réel constaté en testant l'envoi
+  // d'image en conditions réelles : la pièce jointe LOCAL, une fois rendue
+  // absolue, était chargée en <img> simple sans en-tête d'autorisation et
+  // bloquée par la politique Cross-Origin-Resource-Policy du backend).
+  const attachmentUrl = message.attachments?.[0]?.url ?? null;
 
   return (
     <div className={`group flex items-end gap-2 ${own ? "justify-end" : "justify-start"}`}>
@@ -207,10 +220,7 @@ export function MessageBubble({
             {lightboxOpen && <ImageLightbox src={attachmentUrl} onClose={() => setLightboxOpen(false)} />}
           </div>
         ) : message.type === "MEDIA_ALBUM" && message.attachments && message.attachments.length > 0 ? (
-          <MediaAlbumGrid
-            attachments={message.attachments.map((a) => ({ ...a, url: api.messages.attachmentUrl(a.id) }))}
-            caption={message.text}
-          />
+          <MediaAlbumGrid attachments={message.attachments} caption={message.text} />
         ) : message.type === "CALL" ? (
           <div
             className={`flex items-center gap-2.5 rounded-2xl px-3.5 py-2.5 text-sm ${

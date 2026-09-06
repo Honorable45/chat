@@ -167,24 +167,32 @@ export function StatusViewer({
           }}
         >
           {current.type === "IMAGE" && current.mediaUrl ? (
-            <AuthenticatedImage
-              src={api.statuses.mediaUrl(current.id)}
-              alt=""
-              className="max-h-full max-w-full object-contain"
-            />
+            // current.mediaUrl vient déjà résolu du DTO (proxy backend
+            // relatif, ou lien Cloudinary déjà absolu selon
+            // mediaStorageProvider — voir StatusesService.toStatusDto) :
+            // jamais le reconstruire depuis le seul ID via
+            // api.statuses.mediaUrl(), qui suppose à tort un chemin proxy
+            // local, casserait un média Cloudinary et ferait perdre à
+            // AuthenticatedImage/Video la distinction relative/absolue dont
+            // elles dépendent pour savoir si un Blob authentifié est
+            // nécessaire (même bug réel que dans MessageBubble.tsx).
+            <AuthenticatedImage src={current.mediaUrl} alt="" className="max-h-full max-w-full object-contain" />
           ) : current.type === "TEXT" ? (
             <p className="max-w-[80%] text-center text-2xl font-semibold text-white">{current.text}</p>
           ) : current.type === "VIDEO" && current.mediaUrl ? (
             <div onClick={(e) => e.stopPropagation()} className="flex h-full w-full items-center justify-center">
               <AuthenticatedVideo
-                src={api.statuses.mediaUrl(current.id)}
+                src={current.mediaUrl}
                 className="max-h-full max-w-full object-contain"
                 onEnded={next}
               />
             </div>
           ) : current.type === "VOICE" && current.mediaUrl ? (
+            // VOICE reste toujours LOCAL (jamais Cloudinary), mais autant
+            // rester cohérent avec le DTO ici aussi plutôt que de
+            // reconstruire depuis l'ID.
             <div onClick={(e) => e.stopPropagation()}>
-              <StatusVoicePlayer src={api.statuses.mediaUrl(current.id)} onEnded={next} />
+              <StatusVoicePlayer src={current.mediaUrl} onEnded={next} />
             </div>
           ) : (
             <p className="text-center text-sm text-white/70">Ce statut n&rsquo;a pas de contenu.</p>

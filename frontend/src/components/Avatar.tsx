@@ -1,4 +1,4 @@
-import { resolveAvatarSrc } from "@/lib/api";
+import { resolveMediaSrc } from "@/lib/api";
 import { avatarGradient, initials } from "@/lib/format";
 
 interface AvatarProps {
@@ -22,11 +22,11 @@ export function Avatar({
   className = "",
 }: AvatarProps) {
   const dimension = { width: size, height: size };
-  const src = resolveAvatarSrc(avatarUrl);
+  const src = resolveMediaSrc(avatarUrl);
   return (
     <span className={`relative inline-flex shrink-0 ${className}`} style={dimension}>
       {src ? (
-        // eslint-disable-next-line @next/next/no-img-element -- URL arbitraire fournie par l'utilisateur (voir UpdateProfileDto.avatarUrl) ou servie publiquement par le backend (voir resolveAvatarSrc), pas un asset local à optimiser.
+        // eslint-disable-next-line @next/next/no-img-element -- URL arbitraire fournie par l'utilisateur (voir UpdateProfileDto.avatarUrl) ou servie publiquement par le backend (voir resolveMediaSrc), pas un asset local à optimiser.
         <img
           src={src}
           alt=""

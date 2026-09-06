@@ -1,6 +1,7 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import type { Profile } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { CloudinaryProvider } from '../uploads/cloudinary.provider';
 import { StorageService } from '../uploads/storage.service';
 import { ProfilesService } from './profiles.service';
 
@@ -10,6 +11,7 @@ function buildProfile(overrides: Partial<Profile> = {}): Profile {
     userId: 'user-1',
     avatarUrl: null,
     avatarStorageKey: null,
+    avatarStorageProvider: 'LOCAL',
     statusText: null,
     voiceCloningConsent: false,
     voiceCloningUpdatedAt: null,
@@ -56,6 +58,11 @@ describe('ProfilesService', () => {
     createReadStream: jest.Mock;
     delete: jest.Mock;
   };
+  let cloudinary: {
+    isConfigured: jest.Mock;
+    uploadPublic: jest.Mock;
+    delete: jest.Mock;
+  };
   let service: ProfilesService;
 
   beforeEach(() => {
@@ -66,9 +73,17 @@ describe('ProfilesService', () => {
       createReadStream: jest.fn().mockReturnValue({ pipe: jest.fn() }),
       delete: jest.fn().mockResolvedValue(undefined),
     };
+    // Non configuré par défaut : chaque test existant continue de passer
+    // par StorageService (LOCAL) — voir describe('Cloudinary', ...) plus bas.
+    cloudinary = {
+      isConfigured: jest.fn().mockReturnValue(false),
+      uploadPublic: jest.fn(),
+      delete: jest.fn().mockResolvedValue(undefined),
+    };
     service = new ProfilesService(
       prisma as unknown as PrismaService,
       storage as unknown as StorageService,
+      cloudinary as unknown as CloudinaryProvider,
     );
   });
 
@@ -156,7 +171,11 @@ describe('ProfilesService', () => {
       expect(storage.delete).toHaveBeenCalledWith('avatar/old.jpg');
       expect(prisma.profile.update).toHaveBeenCalledWith({
         where: { userId: 'user-1' },
-        data: { avatarStorageKey: 'avatar/new.jpg', avatarUrl: null },
+        data: {
+          avatarStorageKey: 'avatar/new.jpg',
+          avatarStorageProvider: 'LOCAL',
+          avatarUrl: null,
+        },
       });
       expect(result.avatarStorageKey).toBe('avatar/new.jpg');
     });
@@ -167,6 +186,49 @@ describe('ProfilesService', () => {
 
       await service.setAvatar('user-1', buildFile());
 
+      expect(storage.delete).not.toHaveBeenCalled();
+    });
+
+    it('utilise Cloudinary (upload public, jamais signé) quand configuré', async () => {
+      cloudinary.isConfigured.mockReturnValue(true);
+      cloudinary.uploadPublic.mockResolvedValue({ publicId: 'glotta/avatar/new123' });
+      prisma.profile.findUnique.mockResolvedValue(buildProfile({ avatarStorageKey: null }));
+      prisma.profile.update.mockResolvedValue(
+        buildProfile({
+          avatarStorageKey: 'glotta/avatar/new123',
+          avatarStorageProvider: 'CLOUDINARY',
+        }),
+      );
+
+      const result = await service.setAvatar('user-1', buildFile());
+
+      expect(cloudinary.uploadPublic).toHaveBeenCalledWith(expect.any(Buffer), 'avatar');
+      expect(storage.save).not.toHaveBeenCalled();
+      expect(prisma.profile.update).toHaveBeenCalledWith({
+        where: { userId: 'user-1' },
+        data: {
+          avatarStorageKey: 'glotta/avatar/new123',
+          avatarStorageProvider: 'CLOUDINARY',
+          avatarUrl: null,
+        },
+      });
+      expect(result.avatarStorageProvider).toBe('CLOUDINARY');
+    });
+
+    it('supprime un ancien avatar Cloudinary via cloudinary.delete, jamais storage.delete', async () => {
+      cloudinary.isConfigured.mockReturnValue(true);
+      cloudinary.uploadPublic.mockResolvedValue({ publicId: 'glotta/avatar/new123' });
+      prisma.profile.findUnique.mockResolvedValue(
+        buildProfile({
+          avatarStorageKey: 'glotta/avatar/old123',
+          avatarStorageProvider: 'CLOUDINARY',
+        }),
+      );
+      prisma.profile.update.mockResolvedValue(buildProfile());
+
+      await service.setAvatar('user-1', buildFile());
+
+      expect(cloudinary.delete).toHaveBeenCalledWith('glotta/avatar/old123', 'image', 'upload');
       expect(storage.delete).not.toHaveBeenCalled();
     });
   });
@@ -191,7 +253,7 @@ describe('ProfilesService', () => {
       expect(storage.delete).toHaveBeenCalledWith('avatar/old.jpg');
       expect(prisma.profile.update).toHaveBeenCalledWith({
         where: { userId: 'user-1' },
-        data: { avatarStorageKey: null },
+        data: { avatarStorageKey: null, avatarStorageProvider: 'LOCAL' },
       });
     });
   });

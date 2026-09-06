@@ -3,6 +3,7 @@ import type { ConversationMember, Message } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PresenceService } from '../presence/presence.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { CloudinaryProvider } from '../uploads/cloudinary.provider';
 import { StorageService } from '../uploads/storage.service';
 import { EventsGateway } from '../websocket/events.gateway';
 import { MessagesService } from './messages.service';
@@ -90,6 +91,13 @@ describe('MessagesService', () => {
     createReadStream: jest.Mock;
     delete: jest.Mock;
   };
+  let cloudinary: {
+    isConfigured: jest.Mock;
+    isConfiguredForSignedMedia: jest.Mock;
+    upload: jest.Mock;
+    getSignedUrl: jest.Mock;
+    delete: jest.Mock;
+  };
   let service: MessagesService;
 
   beforeEach(() => {
@@ -116,12 +124,24 @@ describe('MessagesService', () => {
       createReadStream: jest.fn(),
       delete: jest.fn().mockResolvedValue(undefined),
     };
+    // Non configuré par défaut : chaque test existant continue de passer
+    // par StorageService (LOCAL) exactement comme avant Cloudinary — les
+    // tests dédiés à la branche CLOUDINARY basculent isConfiguredForSignedMedia()
+    // à true explicitement (voir describe('Cloudinary', ...) plus bas).
+    cloudinary = {
+      isConfigured: jest.fn().mockReturnValue(false),
+      isConfiguredForSignedMedia: jest.fn().mockReturnValue(false),
+      upload: jest.fn(),
+      getSignedUrl: jest.fn(),
+      delete: jest.fn().mockResolvedValue(undefined),
+    };
     service = new MessagesService(
       prisma as unknown as PrismaService,
       events as unknown as EventsGateway,
       presence as unknown as PresenceService,
       notifications as unknown as NotificationsService,
       storage as unknown as StorageService,
+      cloudinary as unknown as CloudinaryProvider,
     );
   });
 
@@ -499,6 +519,7 @@ describe('MessagesService', () => {
       prisma.attachment.findUnique.mockResolvedValue({
         id: 'att-1',
         url: 'attachment/photo.jpg',
+        storageProvider: 'LOCAL',
         mimeType: 'image/jpeg',
         message: buildMessage({ conversationId: 'conv-1' }),
       });
@@ -513,6 +534,7 @@ describe('MessagesService', () => {
       prisma.attachment.findUnique.mockResolvedValue({
         id: 'att-1',
         url: 'attachment/photo.jpg',
+        storageProvider: 'LOCAL',
         mimeType: 'image/jpeg',
         message: buildMessage({ conversationId: 'conv-1' }),
       });
@@ -528,6 +550,7 @@ describe('MessagesService', () => {
       prisma.attachment.findUnique.mockResolvedValue({
         id: 'att-1',
         url: 'attachment/photo.png',
+        storageProvider: 'LOCAL',
         mimeType: 'image/jpeg', // volontairement différent : l'extension stockée doit primer
         message: buildMessage({ conversationId: 'conv-1' }),
       });
@@ -539,6 +562,101 @@ describe('MessagesService', () => {
 
       expect(result.mimeType).toBe('image/png');
       expect(result.stream).toBe(fakeStream);
+    });
+
+    it('refuse de streamer une pièce jointe CLOUDINARY par cette route (toAttachmentDto renvoie déjà son URL signée)', async () => {
+      prisma.attachment.findUnique.mockResolvedValue({
+        id: 'att-1',
+        url: 'glotta/attachment/abc123',
+        storageProvider: 'CLOUDINARY',
+        mimeType: 'image/jpeg',
+        message: buildMessage({ conversationId: 'conv-1' }),
+      });
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+
+      await expect(service.streamAttachment('user-1', 'att-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(storage.exists).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Cloudinary (images/vidéos, jamais les vocaux)', () => {
+    it('sendImage utilise Cloudinary quand configuré, jamais StorageService', async () => {
+      cloudinary.isConfiguredForSignedMedia.mockReturnValue(true);
+      cloudinary.upload.mockResolvedValue({ publicId: 'glotta/attachment/new123' });
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      prisma.$transaction.mockResolvedValue([
+        { ...buildMessage({ type: 'IMAGE' }), reads: [], attachments: [] },
+        {},
+      ]);
+
+      await service.sendImage('user-1', { conversationId: 'conv-1' }, buildImageFile());
+
+      expect(cloudinary.upload).toHaveBeenCalledWith(expect.any(Buffer), 'attachment', 'image');
+      expect(storage.save).not.toHaveBeenCalled();
+    });
+
+    it("sendImage retombe sur StorageService quand Cloudinary n'est pas configuré", async () => {
+      cloudinary.isConfiguredForSignedMedia.mockReturnValue(false);
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      prisma.$transaction.mockResolvedValue([
+        { ...buildMessage({ type: 'IMAGE' }), reads: [], attachments: [] },
+        {},
+      ]);
+
+      await service.sendImage('user-1', { conversationId: 'conv-1' }, buildImageFile());
+
+      expect(storage.save).toHaveBeenCalled();
+      expect(cloudinary.upload).not.toHaveBeenCalled();
+    });
+
+    it('toAttachmentDto (via list) génère une URL signée pour une pièce jointe CLOUDINARY, un chemin proxy pour LOCAL', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.message.findMany.mockResolvedValue([
+        {
+          ...buildMessage({ id: 'msg-1' }),
+          reads: [],
+          attachments: [
+            {
+              id: 'att-cloud',
+              url: 'glotta/attachment/abc123',
+              storageProvider: 'CLOUDINARY',
+              type: 'IMAGE',
+              mimeType: 'image/jpeg',
+              sizeBytes: 100,
+              fileName: null,
+              durationSeconds: null,
+              width: null,
+              height: null,
+            },
+            {
+              id: 'att-local',
+              url: 'attachment/xyz.jpg',
+              storageProvider: 'LOCAL',
+              type: 'IMAGE',
+              mimeType: 'image/jpeg',
+              sizeBytes: 100,
+              fileName: null,
+              durationSeconds: null,
+              width: null,
+              height: null,
+            },
+          ],
+        },
+      ]);
+      cloudinary.getSignedUrl.mockReturnValue(
+        'https://res.cloudinary.com/demo/image/authenticated/s--sig--/abc123?__cld_token__=1',
+      );
+
+      const result = await service.list('user-1', 'conv-1', {});
+
+      const [cloudAttachment, localAttachment] = result.items[0].attachments;
+      expect(cloudinary.getSignedUrl).toHaveBeenCalledWith('glotta/attachment/abc123', 'image');
+      expect(cloudAttachment.url).toContain('cloudinary.com');
+      expect(localAttachment.url).toBe('/api/messages/attachments/att-local');
     });
   });
 

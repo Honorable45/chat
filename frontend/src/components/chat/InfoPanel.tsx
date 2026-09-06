@@ -6,30 +6,50 @@ import { Avatar } from "@/components/Avatar";
 import { PlayIcon, XIcon } from "@/components/icons";
 import { MediaGalleryLightbox, type GalleryItem } from "@/components/MediaGalleryLightbox";
 import { Toggle } from "@/components/Toggle";
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, isOwnBackendUrl } from "@/lib/api";
 import { displayName, shortRelativeTime } from "@/lib/format";
 import { useAuthenticatedBlobUrl } from "@/lib/use-authenticated-blob-url";
 import type { Conversation, MessageAttachment } from "@/lib/types";
 
 /** Vignette vidéo pour la grille "Médias partagés" — même principe que
  * VideoThumbnail dans MediaAlbumGrid.tsx (pas de lecture, juste une image
- * réelle de la première image du fichier, jamais une miniature générée). */
+ * réelle de la première image du fichier, jamais une miniature générée).
+ * Une pièce jointe Cloudinary est chargeable directement, jamais besoin du
+ * détour par un Blob authentifié dans ce cas — reconnue via isOwnBackendUrl,
+ * même exception que dans AuthenticatedVideo/VideoThumbnail (jamais un
+ * simple test "URL absolue", voir leur commentaire). */
 function MediaTileVideo({ attachment }: { attachment: MessageAttachment }) {
+  if (!isOwnBackendUrl(attachment.url)) return <MediaTileVideoFrame url={attachment.url} />;
+  return <MediaTileVideoProxy attachment={attachment} />;
+}
+
+function MediaTileVideoProxy({ attachment }: { attachment: MessageAttachment }) {
   const { url, failed } = useAuthenticatedBlobUrl(attachment.url);
-  return (
-    <div className="relative h-full w-full">
-      {failed ? (
+  if (failed) {
+    return (
+      <div className="relative h-full w-full">
         <span className="flex h-full w-full items-center justify-center bg-surface text-xs text-muted">
           Indisponible
         </span>
-      ) : !url ? (
+      </div>
+    );
+  }
+  if (!url) {
+    return (
+      <div className="relative h-full w-full">
         <span className="flex h-full w-full items-center justify-center bg-surface">
           <span className="h-5 w-5 animate-spin rounded-full border-2 border-muted border-t-transparent" />
         </span>
-      ) : (
+      </div>
+    );
+  }
+  return <MediaTileVideoFrame url={url} />;
+}
 
-        <video src={url} className="h-full w-full object-cover" muted playsInline preload="metadata" />
-      )}
+function MediaTileVideoFrame({ url }: { url: string }) {
+  return (
+    <div className="relative h-full w-full">
+      <video src={url} className="h-full w-full object-cover" muted playsInline preload="metadata" />
       <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/15">
         <PlayIcon size={18} className="text-white drop-shadow" />
       </span>
@@ -41,16 +61,15 @@ function MediaTileVideo({ attachment }: { attachment: MessageAttachment }) {
  * Galerie "Médias partagés" — les vraies pièces jointes IMAGE/VIDEO de la
  * conversation (voir MessagesService.listMedia côté backend), plus jamais
  * les dégradés de couleur codés en dur d'une ancienne maquette jamais
- * terminée (bug réel constaté en testant l'interface).
+ * terminée (bug réel constaté en testant l'interface). L'URL de chaque
+ * pièce jointe vient déjà résolue du DTO (proxy backend relatif, ou lien
+ * Cloudinary déjà absolu selon storageProvider — voir
+ * MessagesService.toAttachmentDto) : ne jamais la reconstruire ni la
+ * repasser dans resolveMediaSrc ici, sous peine de casser la distinction
+ * relative/absolue dont dépendent AuthenticatedImage/Video pour savoir si
+ * un Blob authentifié est nécessaire (voir le même correctif dans
+ * MessageBubble.tsx).
  */
-function toDisplayAttachment(m: MessageAttachment): MessageAttachment {
-  // L'URL renvoyée par le backend est relative (`/api/...`) — jamais
-  // utilisable telle quelle si le frontend n'est pas servi depuis la même
-  // origine (voir MessageBubble/MediaAlbumGrid, qui la reconstruisent déjà
-  // de la même façon plutôt que de faire confiance au champ `url` du DTO).
-  return { ...m, url: api.messages.attachmentUrl(m.id) };
-}
-
 function SharedMediaGrid({ conversationId }: { conversationId: string }) {
   const [media, setMedia] = useState<MessageAttachment[] | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -70,7 +89,7 @@ function SharedMediaGrid({ conversationId }: { conversationId: string }) {
     api.conversations
       .media(conversationId)
       .then((page) => {
-        setMedia(page.items.map(toDisplayAttachment));
+        setMedia(page.items);
         setNextCursor(page.nextCursor);
       })
       .catch(() => setMedia([]));
@@ -81,7 +100,7 @@ function SharedMediaGrid({ conversationId }: { conversationId: string }) {
     setLoadingMore(true);
     try {
       const page = await api.conversations.media(conversationId, nextCursor);
-      setMedia((prev) => [...(prev ?? []), ...page.items.map(toDisplayAttachment)]);
+      setMedia((prev) => [...(prev ?? []), ...page.items]);
       setNextCursor(page.nextCursor);
     } catch {
       // Best-effort : la galerie reste utilisable avec ce qui est déjà chargé.

@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { ReadStream } from 'node:fs';
-import { Prisma, Status, StatusType } from '@prisma/client';
+import { MediaStorageProvider, Prisma, Status, StatusType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { resolveAvatarUrl } from '../profiles/avatar.util';
 import { ALLOWED_AUDIO_MIME_TYPES, MAX_AUDIO_SIZE_BYTES } from '../uploads/audio-upload.constants';
@@ -15,6 +15,7 @@ import {
   MAX_IMAGE_SIZE_BYTES,
   MAX_VIDEO_SIZE_BYTES,
 } from '../uploads/media-upload.constants';
+import { CloudinaryProvider } from '../uploads/cloudinary.provider';
 import { matchesFileSignature } from '../uploads/file-signature.util';
 import { StorageService } from '../uploads/storage.service';
 import { ContactsService } from '../contacts/contacts.service';
@@ -65,13 +66,23 @@ const STATUS_WITH_AUTHOR_INCLUDE = {
 
 type StatusWithAuthor = Prisma.StatusGetPayload<{ include: typeof STATUS_WITH_AUTHOR_INCLUDE }>;
 
-function toStatusDto(status: StatusWithAuthor, viewerId: string, viewedByMe: boolean) {
+function toStatusDto(
+  status: StatusWithAuthor,
+  viewerId: string,
+  viewedByMe: boolean,
+  cloudinary: CloudinaryProvider,
+) {
   const isMine = status.userId === viewerId;
+  const mediaUrl = !status.mediaStorageKey
+    ? null
+    : status.mediaStorageProvider === 'CLOUDINARY'
+      ? cloudinary.getSignedUrl(status.mediaStorageKey, status.type === 'VIDEO' ? 'video' : 'image')
+      : `/api/statuses/${status.id}/media`;
   return {
     id: status.id,
     type: status.type,
     text: status.text,
-    mediaUrl: status.mediaStorageKey ? `/api/statuses/${status.id}/media` : null,
+    mediaUrl,
     visibility: status.visibility,
     author: {
       id: status.user.id,
@@ -104,6 +115,7 @@ export class StatusesService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly contacts: ContactsService,
+    private readonly cloudinary: CloudinaryProvider,
   ) {}
 
   async create(
@@ -112,6 +124,7 @@ export class StatusesService {
     file: Express.Multer.File | undefined,
   ): Promise<StatusDto> {
     let mediaKey: string | null = null;
+    let mediaProvider: MediaStorageProvider = 'LOCAL';
 
     if (dto.type === 'TEXT') {
       if (!dto.text?.trim()) {
@@ -119,8 +132,24 @@ export class StatusesService {
       }
     } else {
       const extension = this.validateMediaFile(dto.type, file);
-      const stored = await this.storage.save(file!.buffer, 'status', extension);
-      mediaKey = stored.key;
+      // VOICE reste toujours sur StorageService, jamais Cloudinary — seul le
+      // périmètre convenu (images/vidéos) peut y basculer.
+      // isConfiguredForSignedMedia() (pas isConfigured()) : toStatusDto
+      // produit une URL SIGNÉE pour IMAGE/VIDEO, qui échoue sans
+      // CLOUDINARY_AUTH_TOKEN_KEY — mêmes conséquences qu'un message (voir
+      // MessagesService.saveMediaFile) si on uploadait quand même.
+      if (dto.type !== 'VOICE' && this.cloudinary.isConfiguredForSignedMedia()) {
+        const uploaded = await this.cloudinary.upload(
+          file!.buffer,
+          'status',
+          dto.type === 'VIDEO' ? 'video' : 'image',
+        );
+        mediaKey = uploaded.publicId;
+        mediaProvider = 'CLOUDINARY';
+      } else {
+        const stored = await this.storage.save(file!.buffer, 'status', extension);
+        mediaKey = stored.key;
+      }
     }
 
     const status = await this.prisma.status.create({
@@ -129,13 +158,14 @@ export class StatusesService {
         type: dto.type,
         text: dto.text,
         mediaStorageKey: mediaKey,
+        mediaStorageProvider: mediaProvider,
         visibility: dto.visibility ?? 'CONTACTS',
         expiresAt: new Date(Date.now() + STATUS_TTL_MS),
       },
       include: STATUS_WITH_AUTHOR_INCLUDE,
     });
 
-    return toStatusDto(status, userId, false);
+    return toStatusDto(status, userId, false, this.cloudinary);
   }
 
   /** Tous les statuts actifs (non expirés) que l'appelant est autorisé à voir. */
@@ -165,13 +195,20 @@ export class StatusesService {
     });
     const viewedSet = new Set(viewedIds.map((v) => v.statusId));
 
-    return statuses.map((status) => toStatusDto(status, viewerId, viewedSet.has(status.id)));
+    return statuses.map((status) =>
+      toStatusDto(status, viewerId, viewedSet.has(status.id), this.cloudinary),
+    );
   }
 
   async streamMedia(viewerId: string, statusId: string): Promise<StatusMediaStream> {
     const status = await this.loadVisible(viewerId, statusId);
     if (!status.mediaStorageKey || status.type === 'TEXT') {
       throw new NotFoundException('Ce statut ne contient pas de média.');
+    }
+    if (status.mediaStorageProvider !== 'LOCAL') {
+      // Ne devrait jamais être atteint en usage normal — voir le
+      // commentaire équivalent dans MessagesService.streamAttachment.
+      throw new NotFoundException('Ce média ne se sert plus par cette route.');
     }
     if (!(await this.storage.exists(status.mediaStorageKey))) {
       throw new NotFoundException('Fichier introuvable.');
@@ -238,7 +275,7 @@ export class StatusesService {
     // en base pointant vers un fichier qu'on n'a pas réussi à effacer.
     await this.prisma.status.delete({ where: { id: statusId } });
     if (status.mediaStorageKey) {
-      await this.storage.delete(status.mediaStorageKey);
+      await this.deleteMedia(status.mediaStorageKey, status.mediaStorageProvider, status.type);
     }
   }
 
@@ -255,7 +292,19 @@ export class StatusesService {
 
     await this.prisma.status.delete({ where: { id: statusId } });
     if (status.mediaStorageKey) {
-      await this.storage.delete(status.mediaStorageKey);
+      await this.deleteMedia(status.mediaStorageKey, status.mediaStorageProvider, status.type);
+    }
+  }
+
+  private async deleteMedia(
+    key: string,
+    provider: MediaStorageProvider,
+    type: StatusType,
+  ): Promise<void> {
+    if (provider === 'CLOUDINARY') {
+      await this.cloudinary.delete(key, type === 'VIDEO' ? 'video' : 'image', 'authenticated');
+    } else {
+      await this.storage.delete(key);
     }
   }
 

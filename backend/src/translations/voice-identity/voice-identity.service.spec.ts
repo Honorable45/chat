@@ -9,6 +9,7 @@ function buildProfile(overrides: Partial<Profile> = {}): Profile {
     userId: 'user-1',
     avatarUrl: null,
     avatarStorageKey: null,
+    avatarStorageProvider: 'LOCAL',
     statusText: null,
     voiceCloningConsent: false,
     voiceCloningUpdatedAt: null,
