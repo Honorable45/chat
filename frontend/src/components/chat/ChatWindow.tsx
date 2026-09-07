@@ -96,8 +96,17 @@ export function ChatWindow({
   }, [highlightMessageId, messages]);
 
   const other = conversation.otherParticipant;
+  const isGroup = conversation.type === "GROUP";
   const title = other ? displayName(other) : (conversation.title ?? "Conversation");
   const onlineCount = conversation.members.filter((m) => m.isOnline).length;
+  // Résolu par message, jamais seulement "other" (toujours null pour un
+  // groupe — voir Conversation.otherParticipant côté backend) : sans ça,
+  // aucun expéditeur reçu en groupe n'affiche son nom/avatar (bug réel
+  // constaté en vérification live).
+  const membersById = useMemo(
+    () => new Map(conversation.members.map((p) => [p.id, p])),
+    [conversation.members],
+  );
 
   // Pas d'accumulateur mutable (react-hooks/immutability) : chaque ligne ne
   // regarde que son propre message et le précédent, jamais une variable
@@ -148,15 +157,20 @@ export function ChatWindow({
               </div>
             </Link>
           ) : (
-            <>
-              <Avatar firstName={title} lastName="" size={40} />
+            // Groupe : le clic ouvre le panneau d'infos (membres/paramètres),
+            // jamais un profil unique — voir InfoPanel pour le rendu GROUP.
+            <button
+              onClick={onToggleInfo}
+              className="flex min-w-0 items-center gap-3 text-left transition hover:opacity-80"
+            >
+              <Avatar firstName={title} lastName="" avatarUrl={conversation.photoUrl} size={40} />
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold">{title}</p>
                 <p className="truncate text-xs text-muted">
                   {isOtherTyping ? "en train d'écrire..." : `${conversation.members.length} membres • ${onlineCount} en ligne`}
                 </p>
               </div>
-            </>
+            </button>
           )}
         </div>
 
@@ -233,6 +247,7 @@ export function ChatWindow({
         <div className="flex flex-col gap-3">
           {rows.map(({ message: m, label, showDaySeparator, showAvatar }) => {
             const own = m.senderId === me.id;
+            const sender = own ? null : (membersById.get(m.senderId) ?? other);
             return (
               <div
                 key={m.id}
@@ -254,7 +269,10 @@ export function ChatWindow({
                 <MessageBubble
                   message={m}
                   own={own}
-                  sender={own ? null : other}
+                  sender={sender}
+                  target={m.systemTargetUserId ? (membersById.get(m.systemTargetUserId) ?? null) : null}
+                  isGroup={isGroup}
+                  myUserId={me.id}
                   showAvatar={showAvatar}
                   myLanguageCode={me.preferredReceiveLanguage?.code ?? me.primaryLanguage?.code}
                   onDeleteVoice={onDeleteVoice}
@@ -274,6 +292,7 @@ export function ChatWindow({
         onSendVoice={onSendVoice}
         onPickMedia={setComposerFiles}
         onPickContact={() => setContactPickerOpen(true)}
+        mentionCandidates={isGroup ? conversation.members : undefined}
       />
 
       {composerFiles && (

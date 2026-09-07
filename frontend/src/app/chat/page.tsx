@@ -8,6 +8,7 @@ import { CallsPanel } from "@/components/chat/CallsPanel";
 import { ChatWindow } from "@/components/chat/ChatWindow";
 import { ContactsPanel } from "@/components/chat/ContactsPanel";
 import { ConversationList } from "@/components/chat/ConversationList";
+import { GroupCreateModal } from "@/components/chat/GroupCreateModal";
 import { IconRail, type RailView } from "@/components/chat/IconRail";
 import { InfoPanel } from "@/components/chat/InfoPanel";
 import { NewConversationModal } from "@/components/chat/NewConversationModal";
@@ -38,6 +39,8 @@ function toLastMessage(message: Message): ConversationLastMessage {
     text: message.text,
     senderId: message.senderId,
     sentAt: message.sentAt,
+    systemAction: message.systemAction,
+    systemTargetUserId: message.systemTargetUserId,
     callType: message.call?.type ?? null,
     callStatus: message.call?.status ?? null,
     callDurationSeconds: message.call?.durationSeconds ?? null,
@@ -56,6 +59,8 @@ function toCallMessage(payload: CallMessagePayload): Message {
     senderId: payload.senderId,
     type: "CALL",
     text: null,
+    systemAction: null,
+    systemTargetUserId: null,
     replyToId: null,
     editedAt: null,
     deletedAt: null,
@@ -63,6 +68,9 @@ function toCallMessage(payload: CallMessagePayload): Message {
     deliveredAt: null,
     readAt: null,
     createdAt: payload.createdAt,
+    reactions: [],
+    mentions: [],
+    mentionsEveryone: false,
     call: payload.call,
   };
 }
@@ -173,6 +181,7 @@ function ChatPageInner() {
   const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null);
   const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showNewConversation, setShowNewConversation] = useState(false);
+  const [showNewGroup, setShowNewGroup] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   // Détermine le contenu de la 2e colonne — voir IconRail. "conversations"
   // reste le seul cas géré par selectConversation()/openConversationById()
@@ -225,6 +234,14 @@ function ChatPageInner() {
         prev.map((c) => (c.id === id ? (typeof patch === "function" ? patch(c) : { ...c, ...patch }) : c)),
       ),
     );
+  }, []);
+
+  /** Groupe supprimé/quitté/dont on a été retiré — sur cet appareil ou un
+   * autre (voir l'événement socket "conversation:left" ci-dessous, émis
+   * uniquement à la personne concernée par ConversationsService). */
+  const removeConversationFromList = useCallback((id: string) => {
+    setConversations((prev) => prev.filter((c) => c.id !== id));
+    setSelectedId((current) => (current === id ? null : current));
   }, []);
 
   const refreshConversations = useCallback(async () => {
@@ -487,6 +504,12 @@ function ChatPageInner() {
     void selectConversation(conversation);
   }
 
+  function onGroupCreated(conversation: Conversation) {
+    setShowNewGroup(false);
+    setConversations((prev) => sortByUpdatedAtDesc([conversation, ...prev]));
+    void selectConversation(conversation);
+  }
+
   async function openConversationById(conversationId: string) {
     const existing = conversations.find((c) => c.id === conversationId);
     if (existing) {
@@ -669,6 +692,15 @@ function ChatPageInner() {
       setMessages((prev) => applyTranslationEvent(prev, payload, "failed"));
     }
 
+    // Groupe supprimé/quitté/dont on a été retiré (voir removeConversationFromList) —
+    // le seul événement temps réel réellement nouveau pour les groupes :
+    // tout le reste (création, ajout de membre, renommage...) passe par les
+    // messages système via "message:new"/"message:updated", déjà gérés
+    // ci-dessus sans code supplémentaire.
+    function onConversationLeft(payload: { conversationId: string }) {
+      removeConversationFromList(payload.conversationId);
+    }
+
     socket.on("message:new", onMessageNew);
     socket.on("message:updated", onMessageUpdated);
     socket.on("message:deleted", onMessageDeleted);
@@ -681,6 +713,7 @@ function ChatPageInner() {
     socket.on("user:online", onOnline);
     socket.on("user:offline", onOffline);
     socket.on("notification:new", onNotificationNew);
+    socket.on("conversation:left", onConversationLeft);
 
     return () => {
       socket.off("message:new", onMessageNew);
@@ -695,8 +728,9 @@ function ChatPageInner() {
       socket.off("user:online", onOnline);
       socket.off("user:offline", onOffline);
       socket.off("notification:new", onNotificationNew);
+      socket.off("conversation:left", onConversationLeft);
     };
-  }, [socket, user, refreshConversations, patchConversation]);
+  }, [socket, user, refreshConversations, patchConversation, removeConversationFromList]);
 
   if (!user) return null;
 
@@ -722,7 +756,22 @@ function ChatPageInner() {
           myUserId={user.id}
           typingConversationIds={typingConversationIds}
           onSelect={(c) => void selectConversation(c)}
+          onNewGroup={() => setShowNewGroup(true)}
           hiddenOnMobile={Boolean(selected) || showSettings}
+        />
+      )}
+
+      {activeView === "groups" && (
+        <ConversationList
+          conversations={conversations}
+          loading={loadingConversations}
+          selectedId={selectedId}
+          myUserId={user.id}
+          typingConversationIds={typingConversationIds}
+          onSelect={(c) => void selectConversation(c)}
+          onNewGroup={() => setShowNewGroup(true)}
+          hiddenOnMobile={Boolean(selected) || showSettings}
+          variant="groups"
         />
       )}
 
@@ -791,13 +840,22 @@ function ChatPageInner() {
       {!showSettings && selected && infoOpen && (
         <InfoPanel
           conversation={selected}
+          myUserId={user.id}
           onClose={() => setInfoOpen(false)}
           onUpdated={(c) => patchConversation(c.id, c)}
+          onLeft={() => {
+            setInfoOpen(false);
+            removeConversationFromList(selected.id);
+          }}
         />
       )}
 
       {showNewConversation && (
         <NewConversationModal onClose={() => setShowNewConversation(false)} onStarted={startConversation} />
+      )}
+
+      {showNewGroup && (
+        <GroupCreateModal onClose={() => setShowNewGroup(false)} onCreated={onGroupCreated} />
       )}
 
       {call.phase !== "idle" && (

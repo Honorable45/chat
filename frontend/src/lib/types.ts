@@ -80,7 +80,49 @@ export type MessageType =
   | "FILE"
   | "CALL"
   | "MEDIA_ALBUM"
-  | "CONTACT_SHARE";
+  | "CONTACT_SHARE"
+  | "SYSTEM";
+
+/** Sans effet pour une conversation DIRECT (toujours MEMBER des deux côtés, jamais affiché). */
+export type GroupRole = "ADMIN" | "MEMBER";
+export type GroupPermission = "ADMIN_ONLY" | "EVERYONE";
+
+/** Actions système reconnues (voir Message.systemAction côté backend) — le
+ * texte affiché ("X a ajouté Y au groupe") est reconstruit côté client à
+ * partir de cette valeur + de l'auteur/la cible, jamais une phrase figée
+ * dans une seule langue en base. */
+export type GroupSystemAction =
+  | "GROUP_CREATED"
+  | "MEMBER_ADDED"
+  | "MEMBER_REMOVED"
+  | "MEMBER_LEFT"
+  | "MEMBER_PROMOTED"
+  | "MEMBER_DEMOTED"
+  | "GROUP_RENAMED"
+  | "GROUP_PHOTO_CHANGED"
+  | "GROUP_DESCRIPTION_CHANGED"
+  | "MEMBER_JOINED_VIA_LINK";
+
+export interface MessageReaction {
+  userId: string;
+  emoji: string;
+}
+
+/** Même liste fixe que le backend (voir ALLOWED_REACTION_EMOJIS côté serveur) — jamais un emoji arbitraire. */
+export const ALLOWED_REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "👏"] as const;
+
+export interface GroupInvite {
+  token: string;
+  isActive: boolean;
+}
+
+/** Aperçu public d'un lien d'invitation (avant de rejoindre) — voir GET /group-invites/:token, aucune authentification requise. */
+export interface GroupInvitePreview {
+  title: string | null;
+  description: string | null;
+  photoUrl: string | null;
+  memberCount: number;
+}
 
 export type CallStatus = "RINGING" | "ACTIVE" | "MISSED" | "DECLINED" | "ENDED";
 
@@ -137,6 +179,8 @@ export interface ConversationParticipant {
   statusText: string | null;
   isOnline: boolean;
   lastSeenAt: string | null;
+  /** Sans effet pour une conversation DIRECT. */
+  role: GroupRole;
 }
 
 export interface ConversationLastMessage {
@@ -145,6 +189,9 @@ export interface ConversationLastMessage {
   text: string | null;
   senderId: string;
   sentAt: string;
+  /** Uniquement renseignés quand `type === "SYSTEM"`. */
+  systemAction: GroupSystemAction | null;
+  systemTargetUserId: string | null;
   /** Uniquement renseigné quand `type === "CALL"`. */
   callType: "AUDIO" | "VIDEO" | null;
   callStatus: CallStatus | null;
@@ -158,12 +205,22 @@ export interface Conversation {
   id: string;
   type: ConversationType;
   title: string | null;
+  /** Champs de groupe — toujours `null`/valeur par défaut pour une conversation DIRECT. */
+  description: string | null;
+  photoUrl: string | null;
+  createdById: string | null;
+  editInfoPermission: GroupPermission;
+  sendMessagesPermission: GroupPermission;
+  addMembersPermission: GroupPermission;
+  sendMediaPermission: GroupPermission;
+  mentionEveryonePermission: GroupPermission;
   otherParticipant: ConversationParticipant | null;
   members: ConversationParticipant[];
   myMembership: {
     isArchived: boolean;
     isMuted: boolean;
     lastReadAt: string | null;
+    role: GroupRole;
   };
   lastMessage: ConversationLastMessage | null;
   unreadCount: number;
@@ -214,6 +271,9 @@ export interface Message {
   senderId: string;
   type: MessageType;
   text: string | null;
+  /** Uniquement renseignés quand `type === "SYSTEM"` (voir GroupSystemAction). */
+  systemAction: GroupSystemAction | null;
+  systemTargetUserId: string | null;
   replyToId: string | null;
   editedAt: string | null;
   deletedAt: string | null;
@@ -221,6 +281,10 @@ export interface Message {
   deliveredAt: string | null;
   readAt: string | null;
   createdAt: string;
+  reactions: MessageReaction[];
+  /** IDs des membres mentionnés individuellement (@nom) — jamais pour @everyone, voir mentionsEveryone. */
+  mentions: string[];
+  mentionsEveryone: boolean;
   /** Absent sur les messages VOIX (forme distincte — voir normalize-message.ts). */
   attachments?: MessageAttachment[];
   /** Transcription/traductions d'un message VOIX — jamais fourni par

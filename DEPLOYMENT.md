@@ -4,7 +4,7 @@ Trois applications à déployer séparément :
 
 | App        | Cible recommandée      | Port en dev |
 | ---------- | ----------------------- | ----------- |
-| `backend/` | Railway ou Render (Docker) | 4000        |
+| `backend/` | Render (Node, sans Docker) | 4000        |
 | `frontend/`| Vercel                   | 3000        |
 | `admin/`   | Vercel (projet séparé)  | 3001        |
 
@@ -24,31 +24,66 @@ paramètres `?sslmode=...` inclus.
 > code (`pg`, utilisé par l'adaptateur Prisma, gère nativement cette
 > valeur).
 
-## 2. Backend (Railway / Render, déploiement Docker)
+## 2. Backend (Render, sans Docker)
 
-Le `Dockerfile` à la racine de `backend/` est prêt à l'emploi et vérifié
-(build + démarrage réel testés) :
-- Applique automatiquement les migrations en attente à chaque démarrage du
-  conteneur (`docker-entrypoint.sh` → `prisma migrate deploy`, idempotent).
-- Lit `$PORT` fourni par la plateforme (`main.ts` le fait déjà).
+Un `Dockerfile` existe à la racine de `backend/` (vérifié, voir plus bas)
+mais **le choix retenu est un déploiement buildpack Render, sans Docker** —
+sur Render, créez un **Web Service** avec Runtime **Node**, Root Directory
+`backend`, et :
+
+| Champ Render | Valeur |
+| --- | --- |
+| Build Command | `npm ci && npx prisma generate && npm run build` |
+| Start Command | `npx prisma migrate deploy && npm run start:prod` |
+
+- `npm ci` déclenche normalement aussi `prisma generate` via le hook
+  `postinstall` du `package.json` (utile en local/CI), mais **ne comptez
+  jamais dessus seul** : certaines plateformes (Render notamment, constaté
+  en déploiement réel) n'exécutent pas ce hook de façon fiable — d'où le
+  `npx prisma generate` explicite dans la Build Command ci-dessus, qui ne
+  dépend d'aucun comportement implicite.
+- `prisma` et `dotenv` sont dans `dependencies` (pas `devDependencies`) :
+  Render peut élaguer les devDependencies avant le runtime, ce qui
+  casserait sinon `migrate deploy` et le chargement de `prisma.config.ts`
+  au démarrage.
+- `prisma migrate deploy` est idempotent, donc sûr à rejouer à chaque
+  démarrage plutôt qu'une seule fois manuellement.
+- `$PORT` est fourni automatiquement par Render — **ne définissez pas de
+  variable `PORT` vous-même**, `main.ts` lit déjà `process.env.PORT`.
 - Expose `GET /api/health` (aucune dépendance base/Redis — un check de vie
   fiable même si la base est temporairement indisponible).
 
-### ⚠️ Stockage des fichiers : action requise pour les messages vocaux
+Vérifié ici par une simulation d'installation complète (`rm -rf
+node_modules dist && npm ci && npm run build` puis `prisma migrate deploy`
++ `start:prod` contre une vraie base) — pas seulement en relisant la
+configuration.
+
+<details>
+<summary>Alternative Docker (si vous préférez malgré tout)</summary>
+
+Le `Dockerfile` à la racine de `backend/` reste à jour et vérifié (build +
+démarrage réel testés) : `docker-entrypoint.sh` applique les migrations au
+démarrage puis lance le serveur, `node_modules` n'est volontairement pas
+élagué des devDependencies entre les étages. Sur Render/Railway, il suffit
+de choisir Runtime **Docker** au lieu de Node — les variables
+d'environnement ci-dessous restent identiques dans les deux cas.
+</details>
+
+### ⚠️ Stockage des fichiers : disque éphémère si Cloudinary n'est pas configuré
 
 `STORAGE_DRIVER=local` écrit sur le disque du conteneur. **Le système de
 fichiers d'un service Railway/Render standard est éphémère** : tout est
 perdu à chaque redéploiement ou redémarrage, sans avertissement.
 
-Depuis l'intégration Cloudinary (voir `CloudinaryProvider`), **cette alerte
-ne concerne plus que les messages vocaux**, qui restent toujours sur le
-disque local quel que soit l'état de Cloudinary — c'est le seul type de
-média encore concerné. Renseignez les variables `CLOUDINARY_*` de
-`backend/.env.example` et les images, vidéos et avatars basculent
-automatiquement sur Cloudinary, sans volume persistant à prévoir pour eux.
+Depuis l'intégration Cloudinary (voir `CloudinaryProvider`), **tous les
+médias sont concernés** : images, vidéos, avatars, photos de groupe, messages
+vocaux et audio traduit (TTS) basculent automatiquement sur Cloudinary dès
+que les 3 variables `CLOUDINARY_*` de `backend/.env.example` sont
+renseignées — sans volume persistant à prévoir pour aucun d'entre eux.
 
-Pour les messages vocaux, deux options, à choisir avant le premier
-déploiement réel :
+Sans ces variables (mode dégradé, comme les fournisseurs IA), tout continue
+sur le disque local exactement comme avant. Deux options, à choisir avant le
+premier déploiement réel si vous ne configurez pas Cloudinary :
 1. **Volume/disque persistant** (le plus rapide à mettre en place, zéro
    changement de code) : Railway propose des *Volumes*, Render des
    *Persistent Disks* — montez-le au chemin de `STORAGE_LOCAL_PATH`
@@ -71,8 +106,7 @@ Reprenez `backend/.env.example` et changez impérativement :
 | `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | Deux secrets forts générés (`openssl rand -hex 32`) — **jamais** les valeurs `change-me-*` de l'exemple |
 | `CORS_ORIGIN` | Domaines Vercel de `frontend/` **et** `admin/`, séparés par une virgule (ex. `https://glotta.vercel.app,https://admin-glotta.vercel.app`) |
 | `STORAGE_LOCAL_PATH` | Chemin du volume persistant monté (messages vocaux uniquement, voir ci-dessus) |
-| `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Identifiants du Dashboard Cloudinary — active le stockage images/vidéos/avatars |
-| `CLOUDINARY_AUTH_TOKEN_KEY` | Cloudinary → Settings → Security → "Token-based authentication" — requis pour les images/vidéos de messages/statuts (pas les avatars) |
+| `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Identifiants du Dashboard Cloudinary — active le stockage de tous les médias (images, vidéos, avatars, photos de groupe, messages vocaux, audio traduit) |
 | `ADMIN_BOOTSTRAP_EMAIL` | Email d'un compte déjà inscrit, pour la toute première promotion admin — voir §4, à retirer une fois utilisé |
 
 Les fournisseurs IA (`STT_PROVIDER`, `TRANSLATION_PROVIDER`,
@@ -85,16 +119,21 @@ Configurez le health check de la plateforme sur `GET /api/health`.
 
 ## 3. Frontend (Vercel)
 
-Projet Vercel standard pointant sur `frontend/` (Root Directory). Variable
-à définir dans les réglages du projet Vercel :
+Projet Vercel standard pointant sur `frontend/` (Root Directory). Deux
+variables à définir dans les réglages du projet Vercel (Settings →
+Environment Variables) :
 
 ```
-NEXT_PUBLIC_API_URL=https://<votre-backend>.up.railway.app/api
+NEXT_PUBLIC_API_URL=https://<votre-backend>.onrender.com/api
+NEXT_PUBLIC_WS_URL=https://<votre-backend>.onrender.com
 ```
 
-(ou l'équivalent Render). Aucun `NEXT_PUBLIC_WS_URL` distinct n'est
-nécessaire : Socket.IO se connecte à la même origine que
-`NEXT_PUBLIC_API_URL` sans son suffixe `/api`.
+**Les deux sont requises** — `NEXT_PUBLIC_WS_URL` n'a pas besoin d'un hôte
+*différent* de `NEXT_PUBLIC_API_URL` (Socket.IO et les appels WebRTC se
+connectent à la même origine que l'API, seulement sans son suffixe `/api`),
+mais si elle est absente, le code retombe sur `http://localhost:4000` même
+en production (voir `lib/socket.ts`/`lib/use-call.ts`) — messagerie
+temps réel et appels resteraient silencieusement cassés.
 
 > **Déploiements de preview** : chaque PR Vercel obtient une URL aléatoire,
 > qui ne sera jamais dans `CORS_ORIGIN` — les previews ne pourront donc pas
@@ -105,10 +144,11 @@ nécessaire : Socket.IO se connecte à la même origine que
 ## 4. Admin (Vercel, second projet séparé)
 
 Même procédure que le frontend, sur un **second projet Vercel** distinct
-pointant sur `admin/` (Root Directory) :
+pointant sur `admin/` (Root Directory) — une seule variable ici, `admin/`
+n'utilise pas Socket.IO/WebRTC :
 
 ```
-NEXT_PUBLIC_API_URL=https://<votre-backend>.up.railway.app/api
+NEXT_PUBLIC_API_URL=https://<votre-backend>.onrender.com/api
 ```
 
 **Avant le premier déploiement**, ajoutez l'URL Vercel de ce projet admin à
@@ -132,7 +172,7 @@ modifie que `isActive`, jamais `role`, par design).
 ## Checklist avant mise en production
 
 - [ ] `JWT_ACCESS_SECRET`/`JWT_REFRESH_SECRET` régénérés (jamais les valeurs d'exemple)
-- [ ] `CLOUDINARY_CLOUD_NAME`/`CLOUDINARY_API_KEY`/`CLOUDINARY_API_SECRET`/`CLOUDINARY_AUTH_TOKEN_KEY` renseignés (images/vidéos/avatars)
+- [ ] `CLOUDINARY_CLOUD_NAME`/`CLOUDINARY_API_KEY`/`CLOUDINARY_API_SECRET` renseignés (images/vidéos/avatars/vocaux)
 - [ ] Volume persistant monté pour `STORAGE_LOCAL_PATH` (messages vocaux uniquement), ou driver S3 implémenté
 - [ ] `CORS_ORIGIN` inclut les deux domaines Vercel (frontend + admin)
 - [ ] `ADMIN_BOOTSTRAP_EMAIL` utilisé puis retiré

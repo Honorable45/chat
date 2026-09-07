@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Avatar } from "@/components/Avatar";
-import { CameraIcon, ChatIcon, GridIcon, LogOutIcon, PhoneIcon, PlusIcon, SettingsIcon, UsersIcon } from "@/components/icons";
+import { CameraIcon, GridIcon, GroupsIcon, LogOutIcon, PhoneIcon, PlusIcon, SettingsIcon, UsersIcon } from "@/components/icons";
 import { useAuth } from "@/lib/auth-context";
 import { NotificationsBell } from "./NotificationsBell";
 
@@ -35,7 +35,7 @@ function RailButton({
   );
 }
 
-export type RailView = "conversations" | "statuses" | "calls" | "contacts" | "notifications";
+export type RailView = "conversations" | "groups" | "statuses" | "calls" | "contacts" | "notifications";
 
 export function IconRail({
   unreadNotifications,
@@ -121,8 +121,8 @@ export function IconRail({
         <RailButton active={activeView === "conversations"} label="Conversations" onClick={() => onSelectView("conversations")}>
           <GridIcon size={20} />
         </RailButton>
-        <RailButton disabled label="Discussions vocales">
-          <ChatIcon size={20} />
+        <RailButton active={activeView === "groups"} label="Groupes" onClick={() => onSelectView("groups")}>
+          <GroupsIcon size={20} />
         </RailButton>
         <RailButton active={activeView === "statuses"} label="Statuts" onClick={() => onSelectView("statuses")}>
           <CameraIcon size={20} />

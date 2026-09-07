@@ -7,6 +7,10 @@ import type {
   ContactRequest,
   ContactStatus,
   Conversation,
+  GroupInvite,
+  GroupInvitePreview,
+  GroupPermission,
+  GroupRole,
   LanguageSummary,
   Me,
   Message,
@@ -295,6 +299,64 @@ export const api = {
       request<{ items: Message[]; matchedMessageId: string; hasOlder: boolean }>(
         `/conversations/${id}/messages/around/${messageId}`,
       ),
+    // --- Groupes ---
+    createGroup: (params: { title: string; description?: string; memberIds: string[]; photo?: File }) => {
+      const form = new FormData();
+      form.append("title", params.title);
+      if (params.description) form.append("description", params.description);
+      form.append("memberIds", JSON.stringify(params.memberIds));
+      if (params.photo) form.append("photo", params.photo);
+      return request<Conversation>("/conversations/group", { method: "POST", body: form });
+    },
+    updateGroup: (
+      id: string,
+      params: {
+        title?: string;
+        description?: string;
+        photo?: File;
+        editInfoPermission?: GroupPermission;
+        sendMessagesPermission?: GroupPermission;
+        addMembersPermission?: GroupPermission;
+        sendMediaPermission?: GroupPermission;
+        mentionEveryonePermission?: GroupPermission;
+      },
+    ) => {
+      const form = new FormData();
+      if (params.title !== undefined) form.append("title", params.title);
+      if (params.description !== undefined) form.append("description", params.description);
+      if (params.editInfoPermission) form.append("editInfoPermission", params.editInfoPermission);
+      if (params.sendMessagesPermission) form.append("sendMessagesPermission", params.sendMessagesPermission);
+      if (params.addMembersPermission) form.append("addMembersPermission", params.addMembersPermission);
+      if (params.sendMediaPermission) form.append("sendMediaPermission", params.sendMediaPermission);
+      if (params.mentionEveryonePermission)
+        form.append("mentionEveryonePermission", params.mentionEveryonePermission);
+      if (params.photo) form.append("photo", params.photo);
+      return request<Conversation>(`/conversations/${id}/group`, { method: "PATCH", body: form });
+    },
+    photoUrl: (id: string) => `${API_URL}/conversations/${id}/photo`,
+    addMembers: (id: string, userIds: string[]) =>
+      request<Conversation>(`/conversations/${id}/members`, { method: "POST", body: { userIds } }),
+    removeMember: (id: string, userId: string) =>
+      request<void>(`/conversations/${id}/members/${userId}`, { method: "DELETE" }),
+    leaveGroup: (id: string) => request<void>(`/conversations/${id}/leave`, { method: "POST" }),
+    setMemberRole: (id: string, userId: string, role: GroupRole) =>
+      request<Conversation>(`/conversations/${id}/members/${userId}/role`, {
+        method: "PATCH",
+        body: { role },
+      }),
+    deleteGroup: (id: string) => request<void>(`/conversations/${id}/group`, { method: "DELETE" }),
+    // --- Lien d'invitation (section 7) ---
+    getOrCreateInvite: (id: string) =>
+      request<GroupInvite>(`/conversations/${id}/invite`, { method: "POST" }),
+    resetInvite: (id: string) =>
+      request<GroupInvite>(`/conversations/${id}/invite/reset`, { method: "POST" }),
+    setInviteActive: (id: string, isActive: boolean) =>
+      request<GroupInvite>(`/conversations/${id}/invite`, { method: "PATCH", body: { isActive } }),
+  },
+  groupInvites: {
+    // Public — aucune authentification (voir GroupInvitesController côté backend).
+    preview: (token: string) => request<GroupInvitePreview>(`/group-invites/${token}`, { auth: false }),
+    join: (token: string) => request<Conversation>(`/group-invites/${token}/join`, { method: "POST" }),
   },
   messages: {
     send: (conversationId: string, text: string, replyToId?: string) =>
@@ -330,6 +392,9 @@ export const api = {
     edit: (id: string, text: string) =>
       request<Message>(`/messages/${id}`, { method: "PATCH", body: { text } }),
     remove: (id: string) => request<void>(`/messages/${id}`, { method: "DELETE" }),
+    addReaction: (id: string, emoji: string) =>
+      request<Message>(`/messages/${id}/reactions`, { method: "POST", body: { emoji } }),
+    removeReaction: (id: string) => request<Message>(`/messages/${id}/reactions`, { method: "DELETE" }),
   },
   voice: {
     audioUrl: (messageId: string) => `${API_URL}/voice/${messageId}/audio`,

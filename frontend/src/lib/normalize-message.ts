@@ -23,6 +23,8 @@ export function normalizeIncomingMessage(raw: unknown): Message | null {
       senderId: String(r.senderId),
       type: "VOICE",
       text: null,
+      systemAction: null,
+      systemTargetUserId: null,
       replyToId: (r.replyToId as string | null) ?? null,
       editedAt: null,
       deletedAt: (r.deletedAt as string | null) ?? null,
@@ -30,6 +32,9 @@ export function normalizeIncomingMessage(raw: unknown): Message | null {
       deliveredAt: (r.deliveredAt as string | null) ?? null,
       readAt: null,
       createdAt: String(r.createdAt ?? r.sentAt),
+      reactions: [],
+      mentions: [],
+      mentionsEveryone: false,
       voice: voice ?? undefined,
     };
   }

@@ -8,9 +8,69 @@ import { ImageLightbox } from "@/components/ImageLightbox";
 import { ReportModal } from "@/components/ReportModal";
 import { api, ApiError } from "@/lib/api";
 import { displayName, timeOfDay } from "@/lib/format";
-import type { CallDetail, ContactStatus, ConversationParticipant, Message, PublicUser } from "@/lib/types";
+import type {
+  CallDetail,
+  ContactStatus,
+  ConversationParticipant,
+  GroupSystemAction,
+  Message,
+  PublicUser,
+} from "@/lib/types";
 import { MediaAlbumGrid } from "./MediaAlbumGrid";
+import { ReactionPicker } from "./ReactionPicker";
 import { VoiceMessageBubble } from "./VoiceMessageBubble";
+
+/** Reconstruit le texte d'un message système à partir de l'action + de
+ * l'auteur/la cible (jamais une phrase figée en une seule langue en base —
+ * voir Message.systemAction côté backend). */
+/** Met en évidence les @nom/@everyone dans un texte (section 12 : "indication
+ * visuelle") — jamais besoin de résoudre le nom réel, le texte tapé
+ * (@username) est déjà lisible tel quel. `font-semibold underline` plutôt
+ * qu'une couleur dédiée : reste lisible aussi bien sur le dégradé d'une
+ * bulle "own" que sur le fond neutre d'une bulle reçue. */
+function renderTextWithMentions(text: string) {
+  const parts = text.split(/(@[a-zA-Z0-9_.]+)/g);
+  return parts.map((part, i) =>
+    part.startsWith("@") ? (
+      <span key={i} className="font-semibold underline decoration-dotted underline-offset-2">
+        {part}
+      </span>
+    ) : (
+      part
+    ),
+  );
+}
+
+function systemMessageText(
+  action: GroupSystemAction,
+  actorName: string,
+  targetName: string | null,
+): string {
+  switch (action) {
+    case "GROUP_CREATED":
+      return `${actorName} a créé le groupe`;
+    case "MEMBER_ADDED":
+      return `${actorName} a ajouté ${targetName ?? "un membre"} au groupe`;
+    case "MEMBER_REMOVED":
+      return `${actorName} a retiré ${targetName ?? "un membre"} du groupe`;
+    case "MEMBER_LEFT":
+      return `${actorName} a quitté le groupe`;
+    case "MEMBER_PROMOTED":
+      return `${actorName} a nommé ${targetName ?? "un membre"} administrateur`;
+    case "MEMBER_DEMOTED":
+      return `${actorName} a retiré les droits administrateur de ${targetName ?? "un membre"}`;
+    case "GROUP_RENAMED":
+      return `${actorName} a modifié le nom du groupe`;
+    case "GROUP_PHOTO_CHANGED":
+      return `${actorName} a modifié la photo du groupe`;
+    case "GROUP_DESCRIPTION_CHANGED":
+      return `${actorName} a modifié la description du groupe`;
+    case "MEMBER_JOINED_VIA_LINK":
+      return `${actorName} a rejoint le groupe via un lien d'invitation`;
+    default:
+      return `${actorName} a mis à jour le groupe`;
+  }
+}
 
 function formatCallDuration(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
@@ -142,6 +202,9 @@ export function MessageBubble({
   message,
   own,
   sender,
+  target,
+  isGroup,
+  myUserId,
   showAvatar,
   myLanguageCode,
   onDeleteVoice,
@@ -150,6 +213,12 @@ export function MessageBubble({
   message: Message;
   own: boolean;
   sender: ConversationParticipant | null;
+  /** Cible d'un message système (voir Message.systemTargetUserId) — toujours `null` hors type SYSTEM. */
+  target?: ConversationParticipant | null;
+  /** Affiche le nom de l'expéditeur au-dessus d'une bulle reçue (section 8 : uniquement pertinent en groupe, jamais en DIRECT où il n'y a qu'un seul correspondant possible). */
+  isGroup?: boolean;
+  /** Pour distinguer sa propre réaction des autres dans message.reactions (n'importe quel message, y compris les siens, peut recevoir des réactions d'autrui). */
+  myUserId: string;
   showAvatar: boolean;
   myLanguageCode?: string | null;
   onDeleteVoice?: (messageId: string) => void;
@@ -158,6 +227,19 @@ export function MessageBubble({
 }) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
+
+  if (message.type === "SYSTEM") {
+    const actorName = own ? "Vous" : sender ? displayName(sender) : "Quelqu'un";
+    const targetName = target ? displayName(target) : null;
+    return (
+      <div className="flex justify-center py-1">
+        <span className="rounded-full bg-surface-raised px-3 py-1 text-center text-[11px] text-muted">
+          {message.systemAction ? systemMessageText(message.systemAction, actorName, targetName) : "Le groupe a été mis à jour"}
+        </span>
+      </div>
+    );
+  }
 
   if (message.deletedAt) {
     return (
@@ -185,6 +267,39 @@ export function MessageBubble({
   // bloquée par la politique Cross-Origin-Resource-Policy du backend).
   const attachmentUrl = message.attachments?.[0]?.url ?? null;
 
+  // Indication visuelle (section 12) — jamais pour son propre message : se
+  // mentionner soi-même n'a pas de sens à signaler.
+  const isMentioned = !own && (message.mentionsEveryone || message.mentions.includes(myUserId));
+
+  const myReaction = message.reactions.find((r) => r.userId === myUserId) ?? null;
+  // Groupe les réactions par emoji pour l'affichage ("👍 2") — l'ordre
+  // d'apparition (premier utilisateur à avoir choisi cet emoji) suffit,
+  // jamais besoin d'un tri plus élaboré pour 6 emojis fixes au maximum.
+  const reactionGroups = message.reactions.reduce<{ emoji: string; count: number }[]>((groups, r) => {
+    const existing = groups.find((g) => g.emoji === r.emoji);
+    if (existing) existing.count += 1;
+    else groups.push({ emoji: r.emoji, count: 1 });
+    return groups;
+  }, []);
+
+  async function toggleReaction(emoji: string) {
+    setReactionPickerOpen(false);
+    try {
+      if (myReaction?.emoji === emoji) {
+        await api.messages.removeReaction(message.id);
+      } else {
+        await api.messages.addReaction(message.id, emoji);
+      }
+      // Aucune mise à jour d'état locale ici : le backend réémet le message
+      // complet via l'événement socket "message:updated", y compris vers ce
+      // même appareil (voir MessagesService.addOrChangeReaction/removeReaction
+      // côté serveur) — déjà géré génériquement par chat/page.tsx.
+    } catch {
+      // Best-effort : une réaction ratée n'a pas besoin d'une bannière
+      // d'erreur bruyante, l'utilisateur peut simplement réessayer.
+    }
+  }
+
   return (
     <div className={`group flex items-end gap-2 ${own ? "justify-end" : "justify-start"}`}>
       {!own &&
@@ -195,6 +310,17 @@ export function MessageBubble({
         ))}
 
       <div className={`flex max-w-[70%] flex-col gap-1 ${own ? "items-end" : "items-start"}`}>
+        {isGroup && !own && showAvatar && sender && (
+          <span className="px-1 text-[11px] font-medium text-[var(--accent-2)]">{displayName(sender)}</span>
+        )}
+        <div className="relative">
+        {reactionPickerOpen && (
+          <ReactionPicker
+            onSelect={(emoji) => void toggleReaction(emoji)}
+            onClose={() => setReactionPickerOpen(false)}
+            align={own ? "end" : "start"}
+          />
+        )}
         {message.type === "VOICE" ? (
           <VoiceMessageBubble
             messageId={message.id}
@@ -216,7 +342,9 @@ export function MessageBubble({
                 <ExpandIcon size={22} className="text-white" />
               </span>
             </button>
-            {message.text && <p className="px-1.5 pb-1 text-sm text-foreground">{message.text}</p>}
+            {message.text && (
+              <p className="px-1.5 pb-1 text-sm text-foreground">{renderTextWithMentions(message.text)}</p>
+            )}
             {lightboxOpen && <ImageLightbox src={attachmentUrl} onClose={() => setLightboxOpen(false)} />}
           </div>
         ) : message.type === "MEDIA_ALBUM" && message.attachments && message.attachments.length > 0 ? (
@@ -260,12 +388,32 @@ export function MessageBubble({
               own
                 ? "rounded-br-md bg-gradient-to-r from-[var(--accent)] to-[var(--accent-2)] text-[var(--accent-contrast)]"
                 : "rounded-bl-md border border-border bg-surface-raised text-foreground"
-            }`}
+            } ${isMentioned ? "ring-2 ring-[var(--accent-2)]" : ""}`}
           >
-            {message.text}
+            {message.text && renderTextWithMentions(message.text)}
             {message.editedAt && (
               <span className={`ml-1.5 text-[10px] ${own ? "opacity-75" : "text-muted"}`}>(modifié)</span>
             )}
+          </div>
+        )}
+        </div>
+
+        {reactionGroups.length > 0 && (
+          <div className={`flex flex-wrap gap-1 px-1 ${own ? "justify-end" : "justify-start"}`}>
+            {reactionGroups.map(({ emoji, count }) => (
+              <button
+                key={emoji}
+                onClick={() => void toggleReaction(emoji)}
+                className={`flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs transition ${
+                  myReaction?.emoji === emoji
+                    ? "border-[var(--accent-2)] bg-[var(--accent-2)]/10"
+                    : "border-border bg-surface-raised hover:bg-surface"
+                }`}
+              >
+                <span>{emoji}</span>
+                {count > 1 && <span className="text-[10px] text-muted">{count}</span>}
+              </button>
+            ))}
           </div>
         )}
 
@@ -274,6 +422,17 @@ export function MessageBubble({
           {own && <StatusTicks message={message} />}
         </div>
       </div>
+
+      {message.type !== "CALL" && (
+        <button
+          onClick={() => setReactionPickerOpen((v) => !v)}
+          aria-label="Réagir à ce message"
+          title="Réagir"
+          className="mb-1 self-end text-muted opacity-0 transition hover:text-foreground group-hover:opacity-100"
+        >
+          🙂
+        </button>
+      )}
 
       {/* Jamais son propre message, jamais un appel (rien à signaler) — visible seulement au survol pour rester discret. */}
       {!own && message.type !== "CALL" && (

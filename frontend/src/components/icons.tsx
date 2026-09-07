@@ -36,6 +36,17 @@ export const GridIcon = (p: IconProps) =>
 export const ChatIcon = (p: IconProps) =>
   base(<path d="M21 11.5a8.38 8.38 0 0 1-4.4 7.4A8.5 8.5 0 0 1 3 12.5 8.5 8.5 0 0 1 12 4a8.4 8.4 0 0 1 8.5 7.5z" />, p);
 
+/** Deux bulles de discussion superposées — distingue "Groupes" (conversations
+ * à plusieurs) de ChatIcon (une seule bulle) et de UsersIcon (contacts). */
+export const GroupsIcon = (p: IconProps) =>
+  base(
+    <>
+      <path d="M15 4.5H8a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h.5v2.3L11 12.5h4a2 2 0 0 0 2-2v-4a2 2 0 0 0-2-2Z" />
+      <path d="M6.5 8.7A2 2 0 0 0 5 10.6v3.9a2 2 0 0 0 2 2h.3V19l2.4-2.5H13a2 2 0 0 0 2-2v-.4" />
+    </>,
+    p,
+  );
+
 export const CameraIcon = (p: IconProps) =>
   base(
     <>
