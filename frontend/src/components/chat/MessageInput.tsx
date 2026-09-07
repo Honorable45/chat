@@ -172,7 +172,7 @@ export function MessageInput({
           }}
           onBlur={stopTypingNow}
           placeholder="Écrire un message..."
-          className="flex-1 rounded-full border border-border bg-surface-raised px-4 py-2.5 text-sm outline-none placeholder:text-muted focus:border-[var(--accent)]"
+          className="min-w-0 flex-1 rounded-full border border-border bg-surface-raised px-4 py-2.5 text-sm outline-none placeholder:text-muted focus:border-[var(--accent)]"
         />
 
         <button
