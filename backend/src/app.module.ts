@@ -27,7 +27,19 @@ import { WebsocketModule } from './websocket/websocket.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
+    // envFilePath en dur sur '.env' laissait fuiter les vraies clés (ex.
+    // Cloudinary) dans les tests e2e : jest charge bien `.env.test` via
+    // DOTENV_CONFIG_PATH (voir test/jest-e2e.json) AVANT que Nest ne
+    // démarre, mais ConfigModule rechargeait ensuite '.env' par-dessus —
+    // dotenv ne réécrit jamais une variable déjà définie, mais toute
+    // variable ABSENTE de .env.test (Cloudinary, jamais nécessaire en test)
+    // se retrouvait quand même définie depuis '.env' (bug réel constaté :
+    // CloudinaryProvider se croyait configuré pendant les tests e2e,
+    // provoquant un vrai appel Cloudinary avec une image de test factice).
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: process.env.DOTENV_CONFIG_PATH ?? '.env',
+    }),
     // Limite globale par défaut (section 23) — les endpoints sensibles
     // (auth) ont leur propre limite plus stricte via @Throttle(). Ne
     // s'applique qu'aux routes HTTP : les connexions WebSocket ne sont pas

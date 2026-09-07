@@ -42,6 +42,7 @@ function buildMembership(overrides: Partial<ConversationMember> = {}): Conversat
     id: 'member-1',
     conversationId: 'conv-1',
     userId: 'user-1',
+    role: 'MEMBER',
     joinedAt: new Date(),
     lastReadAt: null,
     isArchived: false,

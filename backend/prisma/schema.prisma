@@ -41,35 +41,39 @@ model User {
   spokenLanguages UserSpokenLanguage[]
 
   conversationMemberships ConversationMember[]
-  sentMessages            Message[]              @relation("MessageSender")
-  messageReads             MessageRead[]
-  reactions                Reaction[]
-  notifications            Notification[]
-  statuses                 Status[]
-  statusViews              StatusView[]
-  sessions                 UserSession[]
-  attachments              Attachment[]
-  passwordResetTokens      PasswordResetToken[]
-  callsMade                Call[]                @relation("CallCaller")
-  callsReceived            Call[]                @relation("CallCallee")
-  contactRequestsSent      ContactRequest[]      @relation("ContactRequestRequester")
-  contactRequestsReceived  ContactRequest[]      @relation("ContactRequestRecipient")
-  sharedContactCards       SharedContact[]        @relation("SharedContactUser")
+  sentMessages            Message[]            @relation("MessageSender")
+  messageReads            MessageRead[]
+  reactions               Reaction[]
+  notifications           Notification[]
+  statuses                Status[]
+  statusViews             StatusView[]
+  sessions                UserSession[]
+  attachments             Attachment[]
+  passwordResetTokens     PasswordResetToken[]
+  callsMade               Call[]               @relation("CallCaller")
+  callsReceived           Call[]               @relation("CallCallee")
+  contactRequestsSent     ContactRequest[]     @relation("ContactRequestRequester")
+  contactRequestsReceived ContactRequest[]     @relation("ContactRequestRecipient")
+  sharedContactCards      SharedContact[]      @relation("SharedContactUser")
+  groupsCreated           Conversation[]       @relation("ConversationCreatedBy")
+  systemMessageTargets    Message[]            @relation("MessageSystemTarget")
+  groupInvitesCreated     GroupInvite[]        @relation("GroupInviteCreatedBy")
+  mentions                MessageMention[]
 
-  isActive  Boolean  @default(true)
+  isActive   Boolean   @default(true)
   // Jamais modifiable depuis un endpoint self-service (section admin) :
   // uniquement en base (voir prisma/seed.ts, ADMIN_BOOTSTRAP_EMAIL) ou via
   // PATCH /admin/users/:id par un admin déjà existant — AdminGuard relit
   // toujours ce champ en base à chaque requête, jamais depuis un claim JWT.
-  role Role @default(USER)
+  role       Role      @default(USER)
   // Horodaté à la dernière déconnexion de tous les sockets de l'utilisateur
   // (voir PresenceService) — le statut "en ligne" lui-même reste en mémoire,
   // jamais en base (section 6 : dérivé des connexions WebSocket actives).
   lastSeenAt DateTime?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
-  reportsFiled   Report[] @relation("ReportReporter")
+  reportsFiled    Report[] @relation("ReportReporter")
   reportsResolved Report[] @relation("ReportResolver")
 
   @@index([username])
@@ -91,8 +95,8 @@ model UserSession {
   ipAddress        String?
   deviceLabel      String?
 
-  createdAt DateTime  @default(now())
-  lastUsedAt DateTime @default(now())
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime  @default(now())
   expiresAt  DateTime
   revokedAt  DateTime?
 
@@ -126,15 +130,15 @@ model Profile {
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   // URL externe saisie à la main par l'utilisateur (PATCH /users/me/profile).
-  avatarUrl String?
+  avatarUrl             String?
   // Clé de stockage interne d'un avatar téléversé (POST /users/me/avatar) —
   // même principe que VoiceMessage.audioStorageKey : jamais un chemin
   // exposé directement, servi via GET /users/:id/avatar (public, aucune
   // information sensible). Prioritaire sur avatarUrl quand les deux sont
   // renseignés — voir resolveAvatarUrl().
-  avatarStorageKey String?
+  avatarStorageKey      String?
   avatarStorageProvider MediaStorageProvider @default(LOCAL)
-  statusText String?
+  statusText            String?
 
   // Consentement explicite pour utiliser la voix de l'utilisateur dans les
   // traductions vocales adressées à ses correspondants (section 15).
@@ -142,10 +146,10 @@ model Profile {
   voiceCloningUpdatedAt DateTime?
   voiceModelId          String? // référence vers le fournisseur de synthèse vocale, une fois configuré
 
-  showLastSeen    Boolean @default(true)
-  showOnlineStatus Boolean @default(true)
-  showReadReceipts Boolean @default(true)
-  whoCanMessageMe  WhoCanInteract @default(EVERYONE)
+  showLastSeen      Boolean        @default(true)
+  showOnlineStatus  Boolean        @default(true)
+  showReadReceipts  Boolean        @default(true)
+  whoCanMessageMe   WhoCanInteract @default(EVERYONE)
   whoCanSeeMyStatus WhoCanInteract @default(EVERYONE)
 
   // Interrupteur global (section 11 : "les notifications doivent pouvoir
@@ -171,19 +175,19 @@ enum WhoCanInteract {
 // ---------------------------------------------------------------------------
 
 model Language {
-  id         String  @id @default(cuid())
-  code       String  @unique // ex: "fr", "en", "ee" (éwé), "kbp" (kabiyè)
+  id         String @id @default(cuid())
+  code       String @unique // ex: "fr", "en", "ee" (éwé), "kbp" (kabiyè)
   name       String // nom en français
   nativeName String // nom dans la langue elle-même
 
-  enabled               Boolean @default(false)
-  speechSupported       Boolean @default(false)
-  translationSupported  Boolean @default(false)
-  voiceSupported        Boolean @default(false)
+  enabled              Boolean @default(false)
+  speechSupported      Boolean @default(false)
+  translationSupported Boolean @default(false)
+  voiceSupported       Boolean @default(false)
 
-  usersPrimary    User[]                @relation("UserPrimaryLanguage")
-  usersPreferred  User[]                @relation("UserPreferredLanguage")
-  spokenBy        UserSpokenLanguage[]
+  usersPrimary            User[]               @relation("UserPrimaryLanguage")
+  usersPreferred          User[]               @relation("UserPreferredLanguage")
+  spokenBy                UserSpokenLanguage[]
   detectedInVoiceMessages VoiceMessage[]       @relation("VoiceDetectedLanguage")
   sourceTranslations      MessageTranslation[] @relation("TranslationSourceLanguage")
   targetTranslations      MessageTranslation[] @relation("TranslationTargetLanguage")
@@ -209,12 +213,38 @@ model UserSpokenLanguage {
 // ---------------------------------------------------------------------------
 
 model Conversation {
-  id     String           @id @default(cuid())
-  type   ConversationType @default(DIRECT)
-  title  String? // utilisé pour les conversations de groupe (hors MVP)
+  id    String           @id @default(cuid())
+  type  ConversationType @default(DIRECT)
+  title String? // nom du groupe si type GROUP, toujours null si DIRECT
+
+  // Champs de groupe — sans effet pour une conversation DIRECT (jamais lus
+  // dans ce cas). createdById nullable : une conversation DIRECT n'a pas de
+  // "créateur" au sens groupe, et les lignes existantes avant cette
+  // migration restent null.
+  description          String?
+  createdById          String?
+  createdBy            User?                @relation("ConversationCreatedBy", fields: [createdById], references: [id])
+  // Même schéma que Profile.avatarStorageKey/avatarStorageProvider — voir
+  // CloudinaryProvider.uploadPublic, réutilisé tel quel pour une photo de
+  // groupe (publique, jamais signée, comme un avatar).
+  photoStorageKey      String?
+  photoStorageProvider MediaStorageProvider @default(LOCAL)
+
+  // Permissions de groupe (section 5) — ADMIN_ONLY par défaut seulement pour
+  // l'édition des infos, EVERYONE pour le reste (comportement le plus proche
+  // d'une conversation DIRECT classique, où tout le monde peut écrire).
+  editInfoPermission        GroupPermission @default(ADMIN_ONLY)
+  sendMessagesPermission    GroupPermission @default(EVERYONE)
+  addMembersPermission      GroupPermission @default(EVERYONE)
+  sendMediaPermission       GroupPermission @default(EVERYONE)
+  // Qui peut mentionner @everyone (section 12) — ADMIN_ONLY par défaut,
+  // contrairement aux autres permissions : une mention de masse a un
+  // potentiel de nuisance différent d'un simple message.
+  mentionEveryonePermission GroupPermission @default(ADMIN_ONLY)
 
   members  ConversationMember[]
   messages Message[]
+  invite   GroupInvite?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -227,6 +257,11 @@ enum ConversationType {
   GROUP
 }
 
+enum GroupPermission {
+  ADMIN_ONLY
+  EVERYONE
+}
+
 model ConversationMember {
   id             String       @id @default(cuid())
   conversationId String
@@ -234,15 +269,47 @@ model ConversationMember {
   userId         String
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  joinedAt      DateTime  @default(now())
-  lastReadAt    DateTime?
-  isArchived    Boolean   @default(false)
-  isMuted       Boolean   @default(false)
-  leftAt        DateTime?
+  // Sans effet pour une conversation DIRECT (jamais lu dans ce cas, les deux
+  // membres restent MEMBER par défaut).
+  role GroupRole @default(MEMBER)
+
+  joinedAt   DateTime  @default(now())
+  lastReadAt DateTime?
+  isArchived Boolean   @default(false)
+  isMuted    Boolean   @default(false)
+  leftAt     DateTime?
 
   @@unique([conversationId, userId])
   @@index([userId])
   @@map("conversation_members")
+}
+
+enum GroupRole {
+  ADMIN
+  MEMBER
+}
+
+/**
+ * Lien d'invitation d'un groupe (section 7) — un seul par groupe (ligne
+ * réutilisée/mise à jour en place, jamais un historique) : "régénérer"
+ * remplace `token` sur cette même ligne, ce qui invalide instantanément
+ * l'ancien lien puisqu'il ne correspondrait plus à aucune ligne.
+ * "Désactiver" bascule `isActive` sans changer `token`, pour pouvoir le
+ * réactiver ensuite sans distribuer un nouveau lien.
+ */
+model GroupInvite {
+  id             String       @id @default(cuid())
+  conversationId String       @unique
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  token          String       @unique
+  createdById    String
+  createdBy      User         @relation("GroupInviteCreatedBy", fields: [createdById], references: [id])
+  isActive       Boolean      @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("group_invites")
 }
 
 // ---------------------------------------------------------------------------
@@ -259,15 +326,32 @@ model Message {
   type MessageType @default(TEXT)
   text String? // contenu texte original, si type TEXT ou légende
 
+  // Message système (type SYSTEM uniquement, ex. "X a ajouté Y au groupe").
+  // senderId ci-dessus reste TOUJOURS l'auteur réel de l'action (jamais
+  // nullable, aucun besoin d'un "utilisateur système" fictif) —
+  // systemAction/systemTargetUserId permettent de reconstruire le texte
+  // côté client dans la langue du lecteur plutôt que de figer une phrase en
+  // une seule langue en base.
+  systemAction       String?
+  systemTargetUserId String?
+  systemTargetUser   User?   @relation("MessageSystemTarget", fields: [systemTargetUserId], references: [id])
+
   replyToId String?
-  replyTo   Message? @relation("MessageReplyTo", fields: [replyToId], references: [id])
+  replyTo   Message?  @relation("MessageReplyTo", fields: [replyToId], references: [id])
   replies   Message[] @relation("MessageReplyTo")
 
-  voiceMessage VoiceMessage?
-  attachments  Attachment[]
-  reactions    Reaction[]
-  reads        MessageRead[]
-  call         Call?
+  // @everyone (section 12) — jamais une ligne MessageMention par membre
+  // (contrairement à @nom individuel), juste un indicateur : la liste des
+  // destinataires à notifier se déduit des membres actuels du groupe au
+  // moment de l'envoi, inutile de la figer en base.
+  mentionsEveryone Boolean          @default(false)
+  mentions         MessageMention[]
+
+  voiceMessage  VoiceMessage?
+  attachments   Attachment[]
+  reactions     Reaction[]
+  reads         MessageRead[]
+  call          Call?
   sharedContact SharedContact?
 
   editedAt  DateTime?
@@ -301,6 +385,9 @@ enum MessageType {
   // Uniquement les informations publiques (mêmes champs que PublicUserDto),
   // jamais l'email/téléphone/préférences privées du contact partagé.
   CONTACT_SHARE
+  // Événement de groupe automatique (ajout/retrait/départ/promotion/
+  // renommage...) — voir Message.systemAction/systemTargetUserId.
+  SYSTEM
 }
 
 model MessageRead {
@@ -324,8 +411,26 @@ model Reaction {
   emoji     String
   createdAt DateTime @default(now())
 
-  @@unique([messageId, userId, emoji])
+  // Une seule réaction par utilisateur par message, modifiable (changer
+  // d'emoji remplace la ligne plutôt que d'en ajouter une seconde) — jamais
+  // plusieurs emojis simultanés du même utilisateur sur le même message.
+  @@unique([messageId, userId])
   @@map("reactions")
+}
+
+/**
+ * Mention individuelle @nom (section 22) — jamais pour @everyone, voir Message.mentionsEveryone.
+ */
+model MessageMention {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([messageId, userId])
+  @@map("message_mentions")
 }
 
 // ---------------------------------------------------------------------------
@@ -343,11 +448,11 @@ model VoiceMessage {
   // conversation avant de le streamer (section 23).
   audioStorageKey String
   durationSeconds Int
-  waveform       Json? // liste de niveaux d'amplitude pour l'affichage
+  waveform        Json? // liste de niveaux d'amplitude pour l'affichage
 
   detectedLanguageId String?
   detectedLanguage   Language? @relation("VoiceDetectedLanguage", fields: [detectedLanguageId], references: [id])
-  languageOverridden  Boolean  @default(false) // vrai si l'utilisateur a corrigé la détection auto
+  languageOverridden Boolean   @default(false) // vrai si l'utilisateur a corrigé la détection auto
 
   transcript String? // résultat brut du Speech-to-Text, langue d'origine
 
@@ -368,15 +473,15 @@ model MessageTranslation {
   targetLanguageId String
   targetLanguage   Language @relation("TranslationTargetLanguage", fields: [targetLanguageId], references: [id])
 
-  translatedText String?
+  translatedText            String?
   // Même principe que VoiceMessage.audioStorageKey : une clé de stockage
   // interne, jamais un chemin exposé — servie via
   // GET /voice/:messageId/translations/:languageCode/audio.
   translatedAudioStorageKey String?
 
-  status TranslationStatus @default(PENDING)
-  usedVoiceCloning Boolean @default(false) // vrai seulement si le consentement de l'expéditeur était actif
-  errorMessage String? // message interne ; jamais renvoyé tel quel au frontend (section 34)
+  status           TranslationStatus @default(PENDING)
+  usedVoiceCloning Boolean           @default(false) // vrai seulement si le consentement de l'expéditeur était actif
+  errorMessage     String? // message interne ; jamais renvoyé tel quel au frontend (section 34)
 
   startedAt   DateTime?
   completedAt DateTime?
@@ -407,9 +512,9 @@ model Attachment {
   // Selon storageProvider : une clé de fichier local (StorageService) ou un
   // `public_id` Cloudinary — jamais une vraie URL malgré le nom du champ
   // (conservé tel quel, une migration de valeur n'apporterait rien).
-  url       String
-  mimeType  String
-  sizeBytes Int
+  url             String
+  mimeType        String
+  sizeBytes       Int
   storageProvider MediaStorageProvider @default(LOCAL)
 
   // Champs d'un album multi-médias (type de message MEDIA_ALBUM) — un
@@ -482,6 +587,10 @@ enum NotificationType {
   CONTACT_REQUEST
   CONTACT_ACCEPTED
   REACTION
+  ADDED_TO_GROUP
+  REMOVED_FROM_GROUP
+  PROMOTED_ADMIN
+  MENTION
 }
 
 // ---------------------------------------------------------------------------
@@ -550,7 +659,7 @@ model ContactRequest {
   recipientId String
   recipient   User   @relation("ContactRequestRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
 
-  status ContactRequestStatus @default(PENDING)
+  status      ContactRequestStatus @default(PENDING)
   // Qui a bloqué qui — n'a de sens que pour status BLOCKED, le blocage
   // n'étant jamais symétrique contrairement à une demande acceptée.
   blockedById String?
@@ -599,11 +708,11 @@ model Status {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  type    StatusType
-  text    String?
+  type                 StatusType
+  text                 String?
   // Même principe que VoiceMessage.audioStorageKey : une clé de stockage
   // interne, jamais un chemin exposé — servi via GET /statuses/:id/media.
-  mediaStorageKey String?
+  mediaStorageKey      String?
   // "LOCAL" toujours pour type=VOICE (jamais Cloudinary, voir
   // MediaStorageProvider) — seuls IMAGE/VIDEO peuvent valoir CLOUDINARY.
   mediaStorageProvider MediaStorageProvider @default(LOCAL)

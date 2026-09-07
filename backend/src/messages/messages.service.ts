@@ -59,6 +59,10 @@ const DEFAULT_PAGE_SIZE = 30;
 const MEDIA_PREVIEW_PAGE_SIZE = 8;
 
 const MESSAGE_READS_SELECT = { userId: true, readAt: true } satisfies Prisma.MessageReadSelect;
+const MESSAGE_REACTIONS_SELECT = {
+  userId: true,
+  emoji: true,
+} satisfies Prisma.ReactionSelect;
 const MESSAGE_ATTACHMENTS_SELECT = {
   id: true,
   // "url" ne contient pas une vraie URL malgré son nom (voir schema.prisma) :
@@ -74,8 +78,10 @@ const MESSAGE_ATTACHMENTS_SELECT = {
   width: true,
   height: true,
 } satisfies Prisma.AttachmentSelect;
-const MESSAGE_INCLUDE = {
+export const MESSAGE_INCLUDE = {
   reads: { select: MESSAGE_READS_SELECT },
+  reactions: { select: MESSAGE_REACTIONS_SELECT },
+  mentions: { select: { userId: true } },
   // `position` explicite : Prisma ne garantit pas l'ordre d'un include sans
   // `orderBy` — indispensable pour qu'un album se réaffiche toujours dans
   // l'ordre choisi par l'expéditeur.
@@ -97,16 +103,23 @@ type MessageAttachment = {
 
 type MessageWithReads = Message & {
   reads: { userId: string; readAt: Date }[];
+  reactions?: { userId: string; emoji: string }[];
+  mentions?: { userId: string }[];
   attachments?: MessageAttachment[];
 };
 
-function toMessageDto(message: MessageWithReads, cloudinary: CloudinaryProvider) {
+export function toMessageDto(message: MessageWithReads, cloudinary: CloudinaryProvider) {
   return {
     id: message.id,
     conversationId: message.conversationId,
     senderId: message.senderId,
     type: message.type,
     text: message.text,
+    // Uniquement renseignés pour type SYSTEM (voir Message.systemAction en
+    // base) — jamais de phrase pré-rendue en une seule langue, le frontend
+    // reconstruit le texte à partir de l'action + de l'auteur/la cible.
+    systemAction: message.systemAction,
+    systemTargetUserId: message.systemTargetUserId,
     replyToId: message.replyToId,
     editedAt: message.editedAt,
     deletedAt: message.deletedAt,
@@ -116,6 +129,12 @@ function toMessageDto(message: MessageWithReads, cloudinary: CloudinaryProvider)
     // avoir lu le message, donc un seul accusé de lecture possible. Des
     // conversations de groupe demanderaient une liste par lecteur.
     readAt: message.reads[0]?.readAt ?? null,
+    reactions: message.reactions ?? [],
+    // Mentions individuelles @nom (jamais pour @everyone, voir
+    // mentionsEveryone séparé) — juste les IDs, le frontend résout
+    // nom/affichage depuis conversation.members comme pour systemTargetUserId.
+    mentions: (message.mentions ?? []).map((m) => m.userId),
+    mentionsEveryone: message.mentionsEveryone,
     // URL authentifiée, jamais la clé de stockage interne (même principe que
     // VoiceService/StatusesService) — vide pour un message sans pièce jointe.
     attachments: (message.attachments ?? []).map((a) => toAttachmentDto(a, cloudinary)),
@@ -246,7 +265,29 @@ export class MessagesService {
       }),
     ]);
 
-    this.events.emitToUsers(recipients, 'message:new', toMessageDto(message, this.cloudinary));
+    // Mentions (@nom/@everyone, section 12) — jamais pour une conversation
+    // DIRECT (voir processMentions). Recharge le message avant diffusion
+    // s'il a été modifié (mentionsEveryone/mentions créées), même principe
+    // que pour une réaction.
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: dto.conversationId },
+      select: { type: true },
+    });
+    const mentioned = await this.processMentions(
+      dto.conversationId,
+      conversation?.type ?? 'DIRECT',
+      message.id,
+      dto.text,
+      userId,
+    );
+    const finalMessage = mentioned
+      ? await this.prisma.message.findUniqueOrThrow({
+          where: { id: message.id },
+          include: MESSAGE_INCLUDE,
+        })
+      : message;
+
+    this.events.emitToUsers(recipients, 'message:new', toMessageDto(finalMessage, this.cloudinary));
 
     // Centre de notifications (badge, historique) — indépendant de la
     // diffusion temps réel ci-dessus : reste utile même si le destinataire
@@ -262,7 +303,7 @@ export class MessagesService {
       ),
     );
 
-    return toMessageDto(message, this.cloudinary);
+    return toMessageDto(finalMessage, this.cloudinary);
   }
 
   async sendImage(
@@ -347,7 +388,29 @@ export class MessagesService {
       }),
     ]);
 
-    this.events.emitToUsers(recipients, 'message:new', toMessageDto(message, this.cloudinary));
+    const imgConversation = await this.prisma.conversation.findUnique({
+      where: { id: dto.conversationId },
+      select: { type: true },
+    });
+    const imgMentioned = await this.processMentions(
+      dto.conversationId,
+      imgConversation?.type ?? 'DIRECT',
+      message.id,
+      dto.text,
+      userId,
+    );
+    const imgFinalMessage = imgMentioned
+      ? await this.prisma.message.findUniqueOrThrow({
+          where: { id: message.id },
+          include: MESSAGE_INCLUDE,
+        })
+      : message;
+
+    this.events.emitToUsers(
+      recipients,
+      'message:new',
+      toMessageDto(imgFinalMessage, this.cloudinary),
+    );
 
     await Promise.all(
       recipients.map((recipientId) =>
@@ -360,7 +423,7 @@ export class MessagesService {
       ),
     );
 
-    return toMessageDto(message, this.cloudinary);
+    return toMessageDto(imgFinalMessage, this.cloudinary);
   }
 
   /**
@@ -481,7 +544,29 @@ export class MessagesService {
       }),
     ]);
 
-    this.events.emitToUsers(recipients, 'message:new', toMessageDto(message, this.cloudinary));
+    const mediaConversation = await this.prisma.conversation.findUnique({
+      where: { id: dto.conversationId },
+      select: { type: true },
+    });
+    const mediaMentioned = await this.processMentions(
+      dto.conversationId,
+      mediaConversation?.type ?? 'DIRECT',
+      message.id,
+      dto.text,
+      userId,
+    );
+    const mediaFinalMessage = mediaMentioned
+      ? await this.prisma.message.findUniqueOrThrow({
+          where: { id: message.id },
+          include: MESSAGE_INCLUDE,
+        })
+      : message;
+
+    this.events.emitToUsers(
+      recipients,
+      'message:new',
+      toMessageDto(mediaFinalMessage, this.cloudinary),
+    );
 
     const videoCount = stored.filter((a) => a.type === 'VIDEO').length;
     const preview =
@@ -498,7 +583,7 @@ export class MessagesService {
       ),
     );
 
-    return toMessageDto(message, this.cloudinary);
+    return toMessageDto(mediaFinalMessage, this.cloudinary);
   }
 
   /** Streame une pièce jointe — réservé aux membres actifs de la conversation du message parent (section 23). */
@@ -765,6 +850,83 @@ export class MessagesService {
   }
 
   /**
+   * Ajoute la réaction de l'utilisateur à ce message, ou la remplace s'il en
+   * avait déjà une (section 9 : "ajouter/modifier sa réaction" — une seule
+   * réaction par utilisateur par message, voir la contrainte unique
+   * `[messageId, userId]` sur Reaction). Jamais de notification vers
+   * soi-même en réagissant à son propre message.
+   */
+  async addOrChangeReaction(userId: string, messageId: string, emoji: string): Promise<MessageDto> {
+    const message = await this.prisma.message.findUnique({ where: { id: messageId } });
+    if (!message || message.deletedAt) {
+      throw new NotFoundException('Message introuvable.');
+    }
+    await this.assertMembership(userId, message.conversationId);
+
+    await this.prisma.reaction.upsert({
+      where: { messageId_userId: { messageId, userId } },
+      update: { emoji },
+      create: { messageId, userId, emoji },
+    });
+
+    const updated = await this.prisma.message.findUniqueOrThrow({
+      where: { id: messageId },
+      include: MESSAGE_INCLUDE,
+    });
+
+    // L'auteur de la réaction est inclus (pas seulement les autres membres) :
+    // ses AUTRES appareils connectés doivent aussi voir sa propre réaction
+    // apparaître — même principe que markConversationRead ci-dessus. Sans
+    // ça, le client qui vient de réagir ne recevrait jamais sa propre mise à
+    // jour (il n'y a pas de patch optimiste local côté frontend, seul ce
+    // canal socket met à jour l'affichage).
+    const recipients = await this.otherMemberIds(message.conversationId, userId);
+    this.events.emitToUsers(
+      [...recipients, userId],
+      'message:updated',
+      toMessageDto(updated, this.cloudinary),
+    );
+
+    if (message.senderId !== userId) {
+      await this.notifications.create(message.senderId, 'REACTION', {
+        conversationId: message.conversationId,
+        messageId,
+        emoji,
+        userId,
+      });
+    }
+
+    return toMessageDto(updated, this.cloudinary);
+  }
+
+  /** Supprime la réaction de l'utilisateur à ce message — idempotent, aucune erreur s'il n'en avait pas. */
+  async removeReaction(userId: string, messageId: string): Promise<MessageDto> {
+    const message = await this.prisma.message.findUnique({ where: { id: messageId } });
+    if (!message || message.deletedAt) {
+      throw new NotFoundException('Message introuvable.');
+    }
+    await this.assertMembership(userId, message.conversationId);
+
+    await this.prisma.reaction.deleteMany({ where: { messageId, userId } });
+
+    const updated = await this.prisma.message.findUniqueOrThrow({
+      where: { id: messageId },
+      include: MESSAGE_INCLUDE,
+    });
+
+    // Voir addOrChangeReaction ci-dessus : l'auteur est inclus pour que ses
+    // autres appareils voient aussi la suppression de sa propre réaction.
+    const recipients = await this.otherMemberIds(message.conversationId, userId);
+    this.events.emitToUsers(
+      [...recipients, userId],
+      'message:updated',
+      toMessageDto(updated, this.cloudinary),
+    );
+
+    return toMessageDto(updated, this.cloudinary);
+  }
+
+  /**
    * Marque comme lus tous les messages non-lus reçus dans la conversation
    * (jamais ses propres messages). La lecture implique la livraison : les
    * messages encore marqués `deliveredAt: null` la reçoivent au passage.
@@ -862,5 +1024,104 @@ export class MessagesService {
       select: { userId: true },
     });
     return members.map((member) => member.userId);
+  }
+
+  /** @nom (n'importe où dans le texte) et @everyone (section 12) — jamais interprétés à l'intérieur d'un autre mot (précédés d'un début de chaîne ou d'un espace). */
+  private extractMentionTokens(text: string): { usernames: string[]; everyone: boolean } {
+    const usernames = new Set<string>();
+    let everyone = false;
+    const regex = /(?:^|\s)@([a-zA-Z0-9_.]+)/g;
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text))) {
+      if (match[1].toLowerCase() === 'everyone') everyone = true;
+      else usernames.add(match[1]);
+    }
+    return { usernames: [...usernames], everyone };
+  }
+
+  /**
+   * Crée les mentions individuelles/@everyone détectées dans `text` et
+   * notifie — jamais pour une conversation DIRECT (mentionner n'a de sens
+   * qu'à plusieurs, section 12). @everyone nécessite
+   * `mentionEveryonePermission` (ADMIN_ONLY par défaut, jamais un simple
+   * membre par défaut — une mention de masse a un potentiel de nuisance
+   * différent d'un message normal). Renvoie `true` si le message a été
+   * modifié (donc à recharger avant de le diffuser/renvoyer).
+   */
+  private async processMentions(
+    conversationId: string,
+    conversationType: string,
+    messageId: string,
+    text: string | null | undefined,
+    actorId: string,
+  ): Promise<boolean> {
+    if (conversationType !== 'GROUP' || !text) return false;
+    const { usernames, everyone } = this.extractMentionTokens(text);
+    if (usernames.length === 0 && !everyone) return false;
+
+    let mentionsEveryone = false;
+    if (everyone) {
+      const [conversation, actorMembership] = await Promise.all([
+        this.prisma.conversation.findUnique({
+          where: { id: conversationId },
+          select: { mentionEveryonePermission: true },
+        }),
+        this.prisma.conversationMember.findUnique({
+          where: { conversationId_userId: { conversationId, userId: actorId } },
+          select: { role: true },
+        }),
+      ]);
+      mentionsEveryone = Boolean(
+        conversation &&
+        actorMembership &&
+        !(
+          conversation.mentionEveryonePermission === 'ADMIN_ONLY' &&
+          actorMembership.role !== 'ADMIN'
+        ),
+      );
+    }
+
+    const mentionedMembers =
+      usernames.length > 0
+        ? await this.prisma.conversationMember.findMany({
+            where: { conversationId, leftAt: null, user: { username: { in: usernames } } },
+            select: { userId: true },
+          })
+        : [];
+    const mentionedUserIds = [...new Set(mentionedMembers.map((m) => m.userId))].filter(
+      (id) => id !== actorId,
+    );
+
+    if (!mentionsEveryone && mentionedUserIds.length === 0) return false;
+
+    await this.prisma.$transaction([
+      ...(mentionedUserIds.length > 0
+        ? [
+            this.prisma.messageMention.createMany({
+              data: mentionedUserIds.map((userId) => ({ messageId, userId })),
+              skipDuplicates: true,
+            }),
+          ]
+        : []),
+      ...(mentionsEveryone
+        ? [
+            this.prisma.message.update({
+              where: { id: messageId },
+              data: { mentionsEveryone: true },
+            }),
+          ]
+        : []),
+    ]);
+
+    const notifyIds = mentionsEveryone
+      ? await this.otherMemberIds(conversationId, actorId)
+      : mentionedUserIds;
+    await Promise.all(
+      notifyIds.map((userId) =>
+        this.notifications.create(userId, 'MENTION', { conversationId, messageId, actorId }),
+      ),
+    );
+
+    return true;
   }
 }

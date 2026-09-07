@@ -15,6 +15,9 @@ function buildMessage(overrides: Partial<Message> = {}): Message {
     senderId: 'user-1',
     type: 'TEXT',
     text: 'Bonjour',
+    systemAction: null,
+    systemTargetUserId: null,
+    mentionsEveryone: false,
     replyToId: null,
     editedAt: null,
     deletedAt: null,
@@ -58,6 +61,7 @@ function buildMembership(overrides: Partial<ConversationMember> = {}): Conversat
     id: 'member-1',
     conversationId: 'conv-1',
     userId: 'user-1',
+    role: 'MEMBER',
     joinedAt: new Date(),
     lastReadAt: null,
     isArchived: false,
@@ -72,14 +76,17 @@ describe('MessagesService', () => {
     message: {
       create: jest.Mock;
       findUnique: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
       findMany: jest.Mock;
       update: jest.Mock;
       updateMany: jest.Mock;
     };
-    conversation: { update: jest.Mock };
+    conversation: { update: jest.Mock; findUnique: jest.Mock };
     conversationMember: { findUnique: jest.Mock; findMany: jest.Mock; update: jest.Mock };
     messageRead: { createMany: jest.Mock };
     attachment: { findUnique: jest.Mock; findMany: jest.Mock };
+    reaction: { upsert: jest.Mock; deleteMany: jest.Mock };
+    messageMention: { createMany: jest.Mock };
     $transaction: jest.Mock;
   };
   let events: { emitToUsers: jest.Mock };
@@ -105,14 +112,23 @@ describe('MessagesService', () => {
       message: {
         create: jest.fn(),
         findUnique: jest.fn(),
+        findUniqueOrThrow: jest.fn(),
         findMany: jest.fn(),
         update: jest.fn(),
         updateMany: jest.fn(),
       },
-      conversation: { update: jest.fn() },
+      // "DIRECT" par défaut : chaque test existant continue de ne jamais
+      // déclencher processMentions (jamais pour une conversation DIRECT) —
+      // les tests dédiés aux mentions basculent explicitement sur "GROUP".
+      conversation: {
+        update: jest.fn(),
+        findUnique: jest.fn().mockResolvedValue({ type: 'DIRECT' }),
+      },
       conversationMember: { findUnique: jest.fn(), findMany: jest.fn(), update: jest.fn() },
       messageRead: { createMany: jest.fn() },
       attachment: { findUnique: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
+      reaction: { upsert: jest.fn(), deleteMany: jest.fn() },
+      messageMention: { createMany: jest.fn() },
       $transaction: jest.fn(),
     };
     events = { emitToUsers: jest.fn() };
@@ -578,6 +594,161 @@ describe('MessagesService', () => {
         NotFoundException,
       );
       expect(storage.exists).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Mentions (@nom/@everyone, groupe uniquement)', () => {
+    beforeEach(() => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership({ role: 'ADMIN' }));
+      prisma.conversationMember.findMany.mockImplementation(
+        (args: { where: { user?: unknown } }) =>
+          args.where.user
+            ? Promise.resolve([{ userId: 'user-3' }]) // résolution @nom → membres correspondants
+            : Promise.resolve([{ userId: 'user-2' }, { userId: 'user-3' }]), // otherMemberIds
+      );
+      prisma.$transaction.mockImplementation((ops: unknown[]) =>
+        Promise.all(ops as Promise<unknown>[]),
+      );
+    });
+
+    it('crée une mention individuelle @nom et notifie le membre mentionné (pas soi-même)', async () => {
+      prisma.conversation.findUnique.mockResolvedValue({
+        type: 'GROUP',
+        mentionEveryonePermission: 'ADMIN_ONLY',
+      });
+      const created = { ...buildMessage({ text: 'Salut @bob' }), reads: [] };
+      prisma.$transaction.mockResolvedValueOnce([created, {}]); // transaction de création du message
+      prisma.message.findUniqueOrThrow.mockResolvedValue({
+        ...created,
+        mentions: [{ userId: 'user-3' }],
+      });
+
+      await service.send('user-1', { conversationId: 'conv-1', text: 'Salut @bob' });
+
+      expect(prisma.messageMention.createMany).toHaveBeenCalledWith({
+        data: [{ messageId: created.id, userId: 'user-3' }],
+        skipDuplicates: true,
+      });
+      expect(notifications.create).toHaveBeenCalledWith('user-3', 'MENTION', {
+        conversationId: 'conv-1',
+        messageId: created.id,
+        actorId: 'user-1',
+      });
+    });
+
+    it('jamais de mention pour une conversation DIRECT, même avec @nom dans le texte', async () => {
+      prisma.conversation.findUnique.mockResolvedValue({ type: 'DIRECT' });
+      const created = { ...buildMessage({ text: 'Salut @bob' }), reads: [] };
+      prisma.$transaction.mockResolvedValueOnce([created, {}]);
+
+      await service.send('user-1', { conversationId: 'conv-1', text: 'Salut @bob' });
+
+      expect(prisma.messageMention.createMany).not.toHaveBeenCalled();
+      expect(notifications.create).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'MENTION',
+        expect.anything(),
+      );
+    });
+
+    it('@everyone notifie tous les autres membres quand un ADMIN mentionne', async () => {
+      prisma.conversation.findUnique.mockResolvedValue({
+        type: 'GROUP',
+        mentionEveryonePermission: 'ADMIN_ONLY',
+      });
+      const created = { ...buildMessage({ text: 'Réunion @everyone' }), reads: [] };
+      prisma.$transaction.mockResolvedValueOnce([created, {}]);
+      prisma.message.findUniqueOrThrow.mockResolvedValue({ ...created, mentionsEveryone: true });
+
+      await service.send('user-1', { conversationId: 'conv-1', text: 'Réunion @everyone' });
+
+      expect(notifications.create).toHaveBeenCalledWith('user-2', 'MENTION', expect.anything());
+      expect(notifications.create).toHaveBeenCalledWith('user-3', 'MENTION', expect.anything());
+    });
+
+    it('refuse silencieusement @everyone pour un simple MEMBER quand mentionEveryonePermission vaut ADMIN_ONLY', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership({ role: 'MEMBER' }));
+      prisma.conversation.findUnique.mockResolvedValue({
+        type: 'GROUP',
+        mentionEveryonePermission: 'ADMIN_ONLY',
+      });
+      const created = { ...buildMessage({ text: 'Réunion @everyone' }), reads: [] };
+      prisma.$transaction.mockResolvedValueOnce([created, {}]);
+
+      await service.send('user-1', { conversationId: 'conv-1', text: 'Réunion @everyone' });
+
+      expect(notifications.create).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'MENTION',
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('Réactions', () => {
+    beforeEach(() => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage({ senderId: 'user-2' }));
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      prisma.message.findUniqueOrThrow.mockResolvedValue({
+        ...buildMessage({ senderId: 'user-2' }),
+        reads: [],
+        reactions: [{ userId: 'user-1', emoji: '👍' }],
+        attachments: [],
+      });
+    });
+
+    it("ajoute une réaction (upsert), diffuse message:updated, notifie l'auteur (pas soi-même)", async () => {
+      await service.addOrChangeReaction('user-1', 'msg-1', '👍');
+
+      expect(prisma.reaction.upsert).toHaveBeenCalledWith({
+        where: { messageId_userId: { messageId: 'msg-1', userId: 'user-1' } },
+        update: { emoji: '👍' },
+        create: { messageId: 'msg-1', userId: 'user-1', emoji: '👍' },
+      });
+      // L'auteur de la réaction (user-1) est inclus — ses autres appareils
+      // doivent aussi voir sa propre réaction apparaître.
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2', 'user-1'],
+        'message:updated',
+        expect.objectContaining({ reactions: [{ userId: 'user-1', emoji: '👍' }] }),
+      );
+      expect(notifications.create).toHaveBeenCalledWith('user-2', 'REACTION', {
+        conversationId: 'conv-1',
+        messageId: 'msg-1',
+        emoji: '👍',
+        userId: 'user-1',
+      });
+    });
+
+    it('ne notifie jamais soi-même en réagissant à son propre message', async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage({ senderId: 'user-1' }));
+
+      await service.addOrChangeReaction('user-1', 'msg-1', '❤️');
+
+      expect(notifications.create).not.toHaveBeenCalled();
+    });
+
+    it('refuse de réagir à un message supprimé', async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage({ deletedAt: new Date() }));
+
+      await expect(service.addOrChangeReaction('user-1', 'msg-1', '👍')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prisma.reaction.upsert).not.toHaveBeenCalled();
+    });
+
+    it('supprime la réaction (idempotent) et diffuse message:updated', async () => {
+      await service.removeReaction('user-1', 'msg-1');
+
+      expect(prisma.reaction.deleteMany).toHaveBeenCalledWith({
+        where: { messageId: 'msg-1', userId: 'user-1' },
+      });
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2', 'user-1'],
+        'message:updated',
+        expect.anything(),
+      );
     });
   });
 

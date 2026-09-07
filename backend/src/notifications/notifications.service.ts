@@ -17,6 +17,7 @@ const SUPPRESSIBLE_WHEN_VIEWING_TYPES: ReadonlySet<NotificationType> = new Set([
   'NEW_MESSAGE',
   'NEW_VOICE_MESSAGE',
   'REACTION',
+  'MENTION',
 ]);
 
 function toNotificationDto(notification: Notification) {

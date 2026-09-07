@@ -29,6 +29,7 @@ import {
   MAX_MEDIA_ALBUM_ITEMS,
   MAX_VIDEO_SIZE_BYTES,
 } from '../uploads/media-upload.constants';
+import { AddReactionDto } from './dto/add-reaction.dto';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { ListMediaQueryDto } from './dto/list-media-query.dto';
 import { ListMessagesQueryDto } from './dto/list-messages-query.dto';
@@ -181,5 +182,21 @@ export class MessagesController {
   @Delete('messages/:id')
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.messages.remove(user.userId, id);
+  }
+
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @Post('messages/:id/reactions')
+  addReaction(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: AddReactionDto,
+  ) {
+    return this.messages.addOrChangeReaction(user.userId, id, dto.emoji);
+  }
+
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @Delete('messages/:id/reactions')
+  removeReaction(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.messages.removeReaction(user.userId, id);
   }
 }
