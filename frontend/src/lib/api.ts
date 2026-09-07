@@ -427,6 +427,15 @@ export const api = {
     markAllRead: () => request<void>("/notifications/read-all", { method: "PATCH" }),
     markRead: (id: string) => request<AppNotification>(`/notifications/${id}/read`, { method: "PATCH" }),
   },
+  push: {
+    // Route publique (pas de guard côté backend) : utilisable avant même la
+    // connexion pour préparer un abonnement.
+    getPublicKey: () => request<{ publicKey: string }>("/push/public-key", { auth: false }),
+    subscribe: (subscription: PushSubscriptionJSON) =>
+      request<void>("/push/subscribe", { method: "POST", body: subscription }),
+    unsubscribe: (endpoint: string) =>
+      request<void>("/push/subscribe", { method: "DELETE", body: { endpoint } }),
+  },
   calls: {
     // RTCIceServer est un type global du lib DOM (forme identique au JSON renvoyé par le backend).
     iceServers: () => request<RTCIceServer[]>("/calls/ice-servers"),

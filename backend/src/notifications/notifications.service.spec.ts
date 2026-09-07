@@ -2,6 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import type { Notification, Profile } from '@prisma/client';
 import { PresenceService } from '../presence/presence.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { PushProvider } from '../push/push.provider';
 import { EventsGateway } from '../websocket/events.gateway';
 import { NotificationsService } from './notifications.service';
 
@@ -54,6 +55,7 @@ describe('NotificationsService', () => {
   };
   let events: { emitToUser: jest.Mock };
   let presence: { isViewingConversation: jest.Mock };
+  let push: { sendToUser: jest.Mock };
   let service: NotificationsService;
 
   beforeEach(() => {
@@ -70,10 +72,12 @@ describe('NotificationsService', () => {
     };
     events = { emitToUser: jest.fn() };
     presence = { isViewingConversation: jest.fn().mockReturnValue(false) };
+    push = { sendToUser: jest.fn().mockResolvedValue(undefined) };
     service = new NotificationsService(
       prisma as unknown as PrismaService,
       events as unknown as EventsGateway,
       presence as unknown as PresenceService,
+      push as unknown as PushProvider,
     );
   });
 
@@ -86,6 +90,7 @@ describe('NotificationsService', () => {
       expect(result).toBeNull();
       expect(prisma.notification.create).not.toHaveBeenCalled();
       expect(events.emitToUser).not.toHaveBeenCalled();
+      expect(push.sendToUser).not.toHaveBeenCalled();
     });
 
     it('crée la notification et la diffuse en temps réel sinon', async () => {
@@ -100,6 +105,39 @@ describe('NotificationsService', () => {
         'notification:new',
         expect.objectContaining({ id: 'notif-1' }),
       );
+    });
+
+    it('envoie un push (titre + corps construits depuis le payload) quand la notification est effectivement créée', async () => {
+      prisma.notification.create.mockResolvedValue(
+        buildNotification({ payload: { conversationId: 'conv-1', preview: 'Salut !' } }),
+      );
+
+      await service.create('user-1', 'NEW_MESSAGE', {
+        conversationId: 'conv-1',
+        preview: 'Salut !',
+      });
+
+      expect(push.sendToUser).toHaveBeenCalledWith('user-1', {
+        title: 'Glotta',
+        body: 'Salut !',
+        url: '/chat?c=conv-1',
+      });
+    });
+
+    it("n'envoie jamais de push pour INCOMING_CALL (sonnerie temps réel distincte)", async () => {
+      prisma.notification.create.mockResolvedValue(buildNotification({ type: 'INCOMING_CALL' }));
+
+      await service.create('user-1', 'INCOMING_CALL', { conversationId: 'conv-1' });
+
+      expect(push.sendToUser).not.toHaveBeenCalled();
+    });
+
+    it('ne pousse jamais si la notification est supprimée (conversation déjà ouverte)', async () => {
+      presence.isViewingConversation.mockReturnValue(true);
+
+      await service.create('user-1', 'NEW_MESSAGE', { conversationId: 'conv-1' });
+
+      expect(push.sendToUser).not.toHaveBeenCalled();
     });
 
     it('ne crée rien pour un type "message" si le destinataire a déjà cette conversation ouverte', async () => {

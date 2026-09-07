@@ -21,6 +21,16 @@ function describe(n: AppNotification): string {
       return "Nouvelle demande de contact";
     case "REACTION":
       return "Nouvelle réaction à votre message";
+    case "CONTACT_ACCEPTED":
+      return "Votre demande de contact a été acceptée";
+    case "MENTION":
+      return "Vous avez été mentionné(e) dans un groupe";
+    case "ADDED_TO_GROUP":
+      return "Vous avez été ajouté(e) à un groupe";
+    case "REMOVED_FROM_GROUP":
+      return "Vous avez été retiré(e) d'un groupe";
+    case "PROMOTED_ADMIN":
+      return "Vous êtes maintenant administrateur(rice) du groupe";
     default:
       return "Nouvelle notification";
   }

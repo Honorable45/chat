@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, type LoginInput, type RegisterInput } from "./api";
 import { clearTokens, getAccessToken, setTokens } from "./token-store";
 import type { Me } from "./types";
@@ -69,6 +69,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     window.addEventListener("glotta:unauthorized", onUnauthorized);
     return () => window.removeEventListener("glotta:unauthorized", onUnauthorized);
   }, [router]);
+
+  // Enregistre le service worker (PWA — notifications push hors de l'app,
+  // voir public/sw.js) une seule fois, une fois authentifié — ne demande
+  // jamais la permission ni ne s'abonne ici, juste le prépare : c'est
+  // NotificationsSection (Paramètres) qui déclenche l'abonnement, sur un
+  // geste utilisateur explicite.
+  const swRegistered = useRef(false);
+  useEffect(() => {
+    if (status !== "authenticated" || swRegistered.current) return;
+    if (!("serviceWorker" in navigator)) return;
+    swRegistered.current = true;
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // Silencieux : l'onglet Notifications des Paramètres retombe sur
+      // l'état "non supporté" s'il ne trouve pas de registration active.
+    });
+  }, [status]);
 
   const login = useCallback(async (dto: LoginInput) => {
     const res = await api.auth.login(dto);

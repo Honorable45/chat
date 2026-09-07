@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { AuthProvider } from "@/lib/auth-context";
 import { THEME_INIT_SCRIPT } from "@/lib/theme";
@@ -17,6 +17,14 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Glotta",
   description: "Messagerie instantanée multilingue avec vocaux traduits en temps réel.",
+  manifest: "/manifest.webmanifest",
+};
+
+// themeColor vit dans un export séparé de `metadata` depuis les versions
+// récentes de Next.js (metadata.themeColor est déprécié) — voir
+// node_modules/next/dist/docs/01-app/02-guides/progressive-web-apps.md.
+export const viewport: Viewport = {
+  themeColor: "#7c6cf6",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

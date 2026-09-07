@@ -2,7 +2,16 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { Notification, NotificationType, Prisma } from '@prisma/client';
 import { PresenceService } from '../presence/presence.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { PushProvider } from '../push/push.provider';
 import { EventsGateway } from '../websocket/events.gateway';
+import { buildPushText, buildPushUrl } from './push-text.util';
+
+// INCOMING_CALL a déjà sa propre sonnerie temps réel (voir CallsGateway,
+// qui suppose une connexion WebSocket active) — un push impliquerait des
+// actions "Accepter/Refuser" dans la notification système et une UX de
+// réveil complète, hors périmètre : jamais poussé en plus de la ligne
+// Notification/l'événement socket déjà émis ci-dessous pour ce type.
+const PUSH_EXCLUDED_TYPES: ReadonlySet<NotificationType> = new Set(['INCOMING_CALL']);
 
 const DEFAULT_PAGE_SIZE = 30;
 
@@ -38,6 +47,7 @@ export class NotificationsService {
     private readonly prisma: PrismaService,
     private readonly events: EventsGateway,
     private readonly presence: PresenceService,
+    private readonly push: PushProvider,
   ) {}
 
   /**
@@ -72,6 +82,18 @@ export class NotificationsService {
 
     const dto = toNotificationDto(notification);
     this.events.emitToUser(userId, 'notification:new', dto);
+
+    // Fire-and-forget (comme le pipeline vocal) : jamais attendu par
+    // l'appelant, une erreur d'envoi push ne doit jamais faire échouer la
+    // création de la notification elle-même — voir PushProvider.sendToUser,
+    // déjà best-effort en interne.
+    if (!PUSH_EXCLUDED_TYPES.has(type)) {
+      void this.push.sendToUser(userId, {
+        ...buildPushText(type, payload),
+        url: buildPushUrl(payload),
+      });
+    }
+
     return dto;
   }
 

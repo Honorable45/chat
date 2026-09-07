@@ -59,6 +59,7 @@ model User {
   systemMessageTargets    Message[]            @relation("MessageSystemTarget")
   groupInvitesCreated     GroupInvite[]        @relation("GroupInviteCreatedBy")
   mentions                MessageMention[]
+  pushSubscriptions       PushSubscription[]
 
   isActive   Boolean   @default(true)
   // Jamais modifiable depuis un endpoint self-service (section admin) :
@@ -584,6 +585,26 @@ model Notification {
 
   @@index([userId, readAt])
   @@map("notifications")
+}
+
+// Abonnement Web Push (PWA, section notifications hors de l'app) — un par
+// combinaison appareil+navigateur ; `endpoint` est l'identifiant naturel
+// fourni par le navigateur (une resouscription avec le même endpoint est un
+// upsert, jamais un doublon). NotificationsService.create() envoie un push
+// vers chaque abonnement de l'utilisateur ciblé, en plus d'écrire la ligne
+// Notification/d'émettre l'événement socket habituels.
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("push_subscriptions")
 }
 
 enum NotificationType {
