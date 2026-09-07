@@ -23,6 +23,17 @@ const REFRESH_TOKEN_TTL_FALLBACK = '30d';
 const PASSWORD_SALT_ROUNDS = 12;
 const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000; // 1h
 const PASSWORD_RESET_CANDIDATES_LIMIT = 500;
+// Inscription simplifiée (section "juste nom d'utilisateur/email/mot de
+// passe") : langue appliquée quand primaryLanguageCode est omis — l'app est
+// entièrement en français par défaut, et 'fr' est toujours seedée avec
+// enabled: true (voir prisma/seed.ts).
+const DEFAULT_LANGUAGE_CODE = 'fr';
+// Fenêtre pendant laquelle le refresh token IMMÉDIATEMENT précédent reste
+// accepté après une rotation (voir refresh()) — absorbe la course bénigne
+// entre deux onglets/appareils qui rafraîchissent quasi simultanément avec
+// le même token de départ, sans affaiblir la détection d'un vrai rejeu
+// (token plus ancien, ou hors de cette fenêtre).
+const REFRESH_GRACE_PERIOD_MS = 60_000;
 
 export interface AuthTokens {
   accessToken: string;
@@ -89,12 +100,21 @@ export class AuthService {
     if (emailTaken) throw new ConflictException('Cet email est déjà utilisé.');
     if (phoneTaken) throw new ConflictException('Ce numéro est déjà utilisé.');
 
-    const primaryLanguage = await this.languages.findEnabledByCode(dto.primaryLanguageCode);
+    const primaryLanguage = await this.languages.findEnabledByCode(
+      dto.primaryLanguageCode ?? DEFAULT_LANGUAGE_CODE,
+    );
     const preferredLanguage = dto.preferredReceiveLanguageCode
       ? await this.languages.findEnabledByCode(dto.preferredReceiveLanguageCode)
       : primaryLanguage;
 
     const passwordHash = await bcrypt.hash(dto.password, PASSWORD_SALT_ROUNDS);
+
+    // firstName/lastName sont désormais optionnels à l'inscription (section
+    // "juste nom d'utilisateur/email/mot de passe") : à défaut, le nom
+    // d'utilisateur sert de nom affiché — modifiable ensuite depuis
+    // Paramètres → Profil.
+    const firstName = dto.firstName?.trim() || dto.username;
+    const lastName = dto.lastName?.trim() ?? '';
 
     const user = await this.prisma.user.create({
       data: {
@@ -102,8 +122,8 @@ export class AuthService {
         email: dto.email,
         phone: dto.phone,
         passwordHash,
-        firstName: dto.firstName,
-        lastName: dto.lastName,
+        firstName,
+        lastName,
         primaryLanguageId: primaryLanguage.id,
         preferredReceiveLanguageId: preferredLanguage.id,
         profile: { create: {} },
@@ -150,19 +170,33 @@ export class AuthService {
 
     const tokenMatches = await bcrypt.compare(refreshToken, session.refreshTokenHash);
     if (!tokenMatches) {
-      // Le token présenté ne correspond pas à celui attendu pour cette
-      // session : on la révoque par précaution (rejeu possible).
-      await this.prisma.userSession.update({
-        where: { id: session.id },
-        data: { revokedAt: new Date() },
-      });
-      throw new UnauthorizedException('Session invalide ou expirée.');
+      // Rattrapage d'une course bénigne (voir REFRESH_GRACE_PERIOD_MS) :
+      // deux onglets/appareils qui rafraîchissent quasi simultanément avec
+      // le même token de départ — le premier a déjà fait tourner le hash,
+      // le second présente encore l'ancien. Accepté seulement si ce token
+      // est EXACTEMENT le précédent immédiat et que la rotation qui l'a
+      // supplanté est toute récente — jamais pour un token plus ancien ou
+      // hors fenêtre, qui reste traité comme un rejeu réel.
+      const withinGrace =
+        session.previousRefreshTokenHash &&
+        Date.now() - session.lastUsedAt.getTime() < REFRESH_GRACE_PERIOD_MS &&
+        (await bcrypt.compare(refreshToken, session.previousRefreshTokenHash));
+
+      if (!withinGrace) {
+        await this.prisma.userSession.update({
+          where: { id: session.id },
+          data: { revokedAt: new Date() },
+        });
+        throw new UnauthorizedException('Session invalide ou expirée.');
+      }
     }
 
     const user = await this.prisma.user.findUnique({ where: { id: session.userId } });
     if (!user || !user.isActive) throw new UnauthorizedException('Compte indisponible.');
 
-    const tokens = await this.signTokensForSession(user.id, session.id);
+    // Le hash tout juste supplanté devient le nouveau "précédent" gracié —
+    // que ce refresh vienne du chemin normal ou du rattrapage ci-dessus.
+    const tokens = await this.signTokensForSession(user.id, session.id, session.refreshTokenHash);
     return { user: toSafeUser(user), ...tokens };
   }
 
@@ -296,7 +330,11 @@ export class AuthService {
     return this.signTokensForSession(user.id, session.id);
   }
 
-  private async signTokensForSession(userId: string, sessionId: string): Promise<AuthTokens> {
+  private async signTokensForSession(
+    userId: string,
+    sessionId: string,
+    previousHashToRecord: string | null = null,
+  ): Promise<AuthTokens> {
     const payload: JwtPayload = { sub: userId, sessionId };
 
     // expiresIn est passé en secondes (number) plutôt qu'en chaîne "15m" :
@@ -319,6 +357,7 @@ export class AuthService {
       where: { id: sessionId },
       data: {
         refreshTokenHash,
+        previousRefreshTokenHash: previousHashToRecord,
         lastUsedAt: new Date(),
         expiresAt: this.computeRefreshExpiry(),
       },

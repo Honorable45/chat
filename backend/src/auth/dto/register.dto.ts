@@ -2,17 +2,23 @@ import { ApiPropertyOptional, ApiProperty } from '@nestjs/swagger';
 import { IsEmail, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 
 export class RegisterDto {
-  @ApiProperty({ example: 'Honoré' })
+  // Optionnel : l'inscription ne demande plus que nom d'utilisateur/email/
+  // mot de passe (voir AuthService.register) — un compte sans prénom/nom
+  // fournis affiche son nom d'utilisateur à la place, modifiable ensuite
+  // depuis Paramètres → Profil.
+  @ApiPropertyOptional({ example: 'Honoré' })
+  @IsOptional()
   @IsString()
   @MinLength(1)
   @MaxLength(80)
-  firstName!: string;
+  firstName?: string;
 
-  @ApiProperty({ example: 'K.' })
+  @ApiPropertyOptional({ example: 'K.' })
+  @IsOptional()
   @IsString()
   @MinLength(1)
   @MaxLength(80)
-  lastName!: string;
+  lastName?: string;
 
   @ApiProperty({ example: 'honore' })
   @IsString()
@@ -46,9 +52,12 @@ export class RegisterDto {
   @MaxLength(72)
   password!: string;
 
-  @ApiProperty({ example: 'fr', description: 'Code de la langue principale' })
+  // Optionnel : défaut "fr" (voir AuthService.register) — l'utilisateur
+  // peut la changer ensuite depuis Paramètres → Profil.
+  @ApiPropertyOptional({ example: 'fr', description: 'Code de la langue principale (défaut : fr)' })
+  @IsOptional()
   @IsString()
-  primaryLanguageCode!: string;
+  primaryLanguageCode?: string;
 
   @ApiPropertyOptional({
     example: 'en',

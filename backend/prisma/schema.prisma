@@ -91,10 +91,15 @@ model UserSession {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  refreshTokenHash String
-  userAgent        String?
-  ipAddress        String?
-  deviceLabel      String?
+  refreshTokenHash         String
+  // Hash tout juste supplanté lors de la dernière rotation — accepté encore
+  // brièvement (voir AuthService.REFRESH_GRACE_PERIOD_MS) pour absorber une
+  // course bénigne entre deux onglets/appareils qui rafraîchissent presque
+  // simultanément avec le même token de départ, sans ça révoquée à tort.
+  previousRefreshTokenHash String?
+  userAgent                String?
+  ipAddress                String?
+  deviceLabel              String?
 
   createdAt  DateTime  @default(now())
   lastUsedAt DateTime  @default(now())

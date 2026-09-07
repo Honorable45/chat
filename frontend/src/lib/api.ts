@@ -187,13 +187,17 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 export interface RegisterInput {
-  firstName: string;
-  lastName: string;
+  // firstName/lastName/primaryLanguageCode sont optionnels : l'inscription
+  // ne demande plus que nom d'utilisateur/email/mot de passe, le backend
+  // applique des valeurs par défaut (voir AuthService.register) modifiables
+  // ensuite depuis Paramètres → Profil.
+  firstName?: string;
+  lastName?: string;
   username: string;
   email?: string;
   phone?: string;
   password: string;
-  primaryLanguageCode: string;
+  primaryLanguageCode?: string;
   preferredReceiveLanguageCode?: string;
   deviceLabel?: string;
 }

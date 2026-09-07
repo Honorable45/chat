@@ -53,6 +53,7 @@ function buildSession(overrides: Partial<UserSession> = {}): UserSession {
     id: 'session-1',
     userId: 'user-1',
     refreshTokenHash: '',
+    previousRefreshTokenHash: null,
     userAgent: null,
     ipAddress: null,
     deviceLabel: null,
@@ -198,6 +199,125 @@ describe('AuthService', () => {
           data: expect.objectContaining({ primaryLanguageId: 'lang-fr' }),
         }),
       );
+    });
+
+    it("se contente de nom d'utilisateur/email/mot de passe : replie firstName sur le username, lastName sur '', langue sur 'fr'", async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+      languages.findEnabledByCode.mockResolvedValue(buildLanguage());
+      prisma.user.create.mockResolvedValue(buildUser());
+      prisma.userSession.create.mockResolvedValue(buildSession());
+      prisma.userSession.update.mockResolvedValue(buildSession());
+
+      await service.register(
+        { username: 'honore', email: 'honore@example.com', password: 'un-mot-de-passe-solide' },
+        {},
+      );
+
+      expect(languages.findEnabledByCode).toHaveBeenCalledWith('fr');
+      expect(prisma.user.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          data: expect.objectContaining({ firstName: 'honore', lastName: '' }),
+        }),
+      );
+    });
+  });
+
+  describe('refresh', () => {
+    // Convention de ce bloc : mockedBcrypt.compare(token, hash) renvoie vrai
+    // seulement si hash === `hash-of-${token}` — permet de simuler avec
+    // précision quel hash correspond à quel token en clair sans vrai bcrypt.
+    beforeEach(() => {
+      // Casté vers un type de mock non surchargé : la signature "callback"
+      // de bcrypt.compare (renvoie void) fait sinon gagner la mauvaise
+      // surcharge lors de l'inférence de mockImplementation.
+      (
+        mockedBcrypt.compare as unknown as jest.Mock<Promise<boolean>, [string, string]>
+      ).mockImplementation((token, hash) => Promise.resolve(hash === `hash-of-${token}`));
+      jwt.verifyAsync.mockResolvedValue({ sub: 'user-1', sessionId: 'session-1' });
+    });
+
+    it('accepte le refresh token courant normalement', async () => {
+      const session = buildSession({ refreshTokenHash: 'hash-of-current-token' });
+      prisma.userSession.findUnique.mockResolvedValue(session);
+      prisma.user.findUnique.mockResolvedValue(buildUser());
+      prisma.userSession.update.mockResolvedValue(session);
+
+      const result = await service.refresh('current-token');
+
+      expect(result.accessToken).toBe('signed-token');
+      expect(prisma.userSession.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          data: expect.objectContaining({ revokedAt: expect.any(Date) }),
+        }),
+      );
+    });
+
+    it(
+      'accepte encore le précédent refresh token dans la fenêtre de grâce (deux onglets qui ' +
+        'rafraîchissent quasi simultanément avec le même token de départ), sans révoquer la session',
+      async () => {
+        // Simule le "perdant" de la course : un autre appel a déjà fait
+        // tourner le hash vers "new-token", mais celui-ci présente encore
+        // l'ancien, tout juste supplanté (rotation il y a un instant).
+        const session = buildSession({
+          refreshTokenHash: 'hash-of-new-token',
+          previousRefreshTokenHash: 'hash-of-old-token',
+          lastUsedAt: new Date(),
+        });
+        prisma.userSession.findUnique.mockResolvedValue(session);
+        prisma.user.findUnique.mockResolvedValue(buildUser());
+        prisma.userSession.update.mockResolvedValue(session);
+
+        const result = await service.refresh('old-token');
+
+        expect(result.accessToken).toBe('signed-token');
+        expect(prisma.userSession.update).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+            data: expect.objectContaining({ revokedAt: expect.any(Date) }),
+          }),
+        );
+      },
+    );
+
+    it('révoque la session si le token présenté est plus ancien que le précédent immédiat (vrai rejeu)', async () => {
+      const session = buildSession({
+        refreshTokenHash: 'hash-of-new-token',
+        previousRefreshTokenHash: 'hash-of-old-token',
+        lastUsedAt: new Date(),
+      });
+      prisma.userSession.findUnique.mockResolvedValue(session);
+
+      await expect(service.refresh('really-old-token')).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(prisma.userSession.update).toHaveBeenCalledWith({
+        where: { id: session.id },
+        data: { revokedAt: expect.any(Date) as Date },
+      });
+    });
+
+    it('révoque la session si la fenêtre de grâce est dépassée, même pour le précédent immédiat', async () => {
+      const session = buildSession({
+        refreshTokenHash: 'hash-of-new-token',
+        previousRefreshTokenHash: 'hash-of-old-token',
+        lastUsedAt: new Date(Date.now() - 61_000), // > REFRESH_GRACE_PERIOD_MS (60s)
+      });
+      prisma.userSession.findUnique.mockResolvedValue(session);
+
+      await expect(service.refresh('old-token')).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(prisma.userSession.update).toHaveBeenCalledWith({
+        where: { id: session.id },
+        data: { revokedAt: expect.any(Date) as Date },
+      });
+    });
+
+    it('rejette une session déjà révoquée', async () => {
+      prisma.userSession.findUnique.mockResolvedValue(buildSession({ revokedAt: new Date() }));
+
+      await expect(service.refresh('peu-importe')).rejects.toBeInstanceOf(UnauthorizedException);
     });
   });
 
