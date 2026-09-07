@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Socket } from "socket.io-client";
 import { Avatar } from "@/components/Avatar";
+import { BouncingDots } from "@/components/BouncingDots";
 import { ChevronLeftIcon, GridIcon, InfoIcon, PhoneIcon, SearchIcon, VideoIcon } from "@/components/icons";
 import { displayName, shortRelativeTime } from "@/lib/format";
 import type { Conversation, Me, Message } from "@/lib/types";
@@ -224,7 +225,11 @@ export function ChatWindow({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto glotta-scroll-hidden px-5 py-4">
-        {loadingMessages && <p className="py-6 text-center text-sm text-muted">Chargement des messages...</p>}
+        {loadingMessages && (
+          <div className="flex h-full items-center justify-center py-10">
+            <BouncingDots />
+          </div>
+        )}
 
         {!loadingMessages && hasOlder && (
           <div className="mb-3 flex justify-center">

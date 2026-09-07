@@ -347,12 +347,22 @@ export class ContactsService {
       senderId: message.senderId,
       type: 'CONTACT_SHARE' as const,
       text: null,
+      systemAction: null,
+      systemTargetUserId: null,
       replyToId: null,
       editedAt: null,
       deletedAt: null,
       sentAt: message.sentAt,
       deliveredAt: null,
       readAt: null,
+      // Toujours présents même vides (jamais absents) : le frontend
+      // (MessageBubble.tsx) les lit sans garde — un message CONTACT_SHARE
+      // sans ces 3 champs faisait planter le rendu de la bulle avec "Cannot
+      // read properties of undefined" dès qu'un message de ce type
+      // apparaissait dans la conversation (bug réel constaté en prod).
+      reactions: [],
+      mentions: [],
+      mentionsEveryone: false,
       attachments: [],
       sharedContact: sharedProfile,
       createdAt: message.createdAt,

@@ -367,6 +367,28 @@ describe('ContactsService', () => {
         expect.objectContaining({ conversationId: 'conv-1', messageId: 'msg-1' }),
       );
     });
+
+    it('renvoie toujours reactions/mentions/mentionsEveryone (jamais absents) — un message CONTACT_SHARE sans ces champs fait planter le rendu de la bulle côté frontend (MessageBubble.tsx, "Cannot read properties of undefined")', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue({ leftAt: null });
+      prisma.conversationMember.findMany.mockResolvedValue([]);
+      prisma.$transaction.mockResolvedValue([
+        {
+          id: 'msg-1',
+          conversationId: 'conv-1',
+          senderId: 'alice',
+          sentAt: new Date(),
+          createdAt: new Date(),
+        },
+        {},
+      ]);
+      users.getPublicProfile.mockResolvedValue(buildPublicProfile({ id: 'bob' }));
+
+      const result = await service.shareContact('alice', { conversationId: 'conv-1', userId: 'bob' });
+
+      expect(result).toEqual(
+        expect.objectContaining({ reactions: [], mentions: [], mentionsEveryone: false }),
+      );
+    });
   });
 
   describe('getByMessageId', () => {
@@ -407,6 +429,12 @@ describe('ContactsService', () => {
 
       const result = await service.getByMessageId('carol', 'msg-1');
       expect(result.sharedContact.id).toBe('bob');
+      // Chemin emprunté à chaque ouverture d'une conversation contenant un
+      // CONTACT_SHARE historique (hydrateContactShareMessages côté
+      // frontend) — mêmes champs requis que shareContact() ci-dessus.
+      expect(result).toEqual(
+        expect.objectContaining({ reactions: [], mentions: [], mentionsEveryone: false }),
+      );
     });
   });
 });
