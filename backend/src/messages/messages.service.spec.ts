@@ -100,7 +100,6 @@ describe('MessagesService', () => {
   };
   let cloudinary: {
     isConfigured: jest.Mock;
-    isConfiguredForSignedMedia: jest.Mock;
     upload: jest.Mock;
     getSignedUrl: jest.Mock;
     delete: jest.Mock;
@@ -142,11 +141,10 @@ describe('MessagesService', () => {
     };
     // Non configuré par défaut : chaque test existant continue de passer
     // par StorageService (LOCAL) exactement comme avant Cloudinary — les
-    // tests dédiés à la branche CLOUDINARY basculent isConfiguredForSignedMedia()
-    // à true explicitement (voir describe('Cloudinary', ...) plus bas).
+    // tests dédiés à la branche CLOUDINARY basculent isConfigured() à true
+    // explicitement (voir describe('Cloudinary', ...) plus bas).
     cloudinary = {
       isConfigured: jest.fn().mockReturnValue(false),
-      isConfiguredForSignedMedia: jest.fn().mockReturnValue(false),
       upload: jest.fn(),
       getSignedUrl: jest.fn(),
       delete: jest.fn().mockResolvedValue(undefined),
@@ -754,7 +752,7 @@ describe('MessagesService', () => {
 
   describe('Cloudinary (images/vidéos, jamais les vocaux)', () => {
     it('sendImage utilise Cloudinary quand configuré, jamais StorageService', async () => {
-      cloudinary.isConfiguredForSignedMedia.mockReturnValue(true);
+      cloudinary.isConfigured.mockReturnValue(true);
       cloudinary.upload.mockResolvedValue({ publicId: 'glotta/attachment/new123' });
       prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
       prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
@@ -770,7 +768,7 @@ describe('MessagesService', () => {
     });
 
     it("sendImage retombe sur StorageService quand Cloudinary n'est pas configuré", async () => {
-      cloudinary.isConfiguredForSignedMedia.mockReturnValue(false);
+      cloudinary.isConfigured.mockReturnValue(false);
       prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
       prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
       prisma.$transaction.mockResolvedValue([

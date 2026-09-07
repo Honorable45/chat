@@ -101,7 +101,6 @@ describe('StatusesService', () => {
   let contacts: { listContactIds: jest.Mock };
   let cloudinary: {
     isConfigured: jest.Mock;
-    isConfiguredForSignedMedia: jest.Mock;
     upload: jest.Mock;
     getSignedUrl: jest.Mock;
     delete: jest.Mock;
@@ -126,7 +125,6 @@ describe('StatusesService', () => {
     // tests dédiés à la branche CLOUDINARY (jamais pour type VOICE).
     cloudinary = {
       isConfigured: jest.fn().mockReturnValue(false),
-      isConfiguredForSignedMedia: jest.fn().mockReturnValue(false),
       upload: jest.fn(),
       getSignedUrl: jest.fn(),
       delete: jest.fn().mockResolvedValue(undefined),
@@ -194,7 +192,7 @@ describe('StatusesService', () => {
 
   describe('Cloudinary (images/vidéos, jamais VOICE)', () => {
     it('utilise Cloudinary pour un statut IMAGE quand configuré', async () => {
-      cloudinary.isConfiguredForSignedMedia.mockReturnValue(true);
+      cloudinary.isConfigured.mockReturnValue(true);
       cloudinary.upload.mockResolvedValue({ publicId: 'glotta/status/abc123' });
       const created = {
         ...buildStatus({
@@ -218,7 +216,7 @@ describe('StatusesService', () => {
     });
 
     it("retombe sur StorageService pour IMAGE/VIDEO quand Cloudinary n'est pas configuré", async () => {
-      cloudinary.isConfiguredForSignedMedia.mockReturnValue(false);
+      cloudinary.isConfigured.mockReturnValue(false);
       const created = {
         ...buildStatus({ type: 'IMAGE', mediaStorageKey: 'status/abc.jpg' }),
         user: { ...buildUser(), profile: buildProfile() },
@@ -233,7 +231,7 @@ describe('StatusesService', () => {
     });
 
     it('un statut VOICE reste toujours sur StorageService, même quand Cloudinary est configuré', async () => {
-      cloudinary.isConfiguredForSignedMedia.mockReturnValue(true);
+      cloudinary.isConfigured.mockReturnValue(true);
       const voiceFile = buildFile({
         mimetype: 'audio/webm',
         originalname: 'voice.webm',

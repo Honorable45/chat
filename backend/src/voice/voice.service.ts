@@ -5,7 +5,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import type { MediaStorageProvider, Prisma } from '@prisma/client';
 import type { ReadStream } from 'node:fs';
 import { LanguagesService } from '../languages/languages.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -18,6 +18,7 @@ import {
   EXTENSION_TO_MIME_TYPE,
   MAX_AUDIO_SIZE_BYTES,
 } from '../uploads/audio-upload.constants';
+import { CloudinaryProvider } from '../uploads/cloudinary.provider';
 import { matchesFileSignature } from '../uploads/file-signature.util';
 import { StorageService } from '../uploads/storage.service';
 import { EventsGateway } from '../websocket/events.gateway';
@@ -34,7 +35,7 @@ const VOICE_MESSAGE_INCLUDE = {
 
 type MessageWithVoice = Prisma.MessageGetPayload<{ include: typeof VOICE_MESSAGE_INCLUDE }>;
 
-function toVoiceMessageDto(message: MessageWithVoice) {
+function toVoiceMessageDto(message: MessageWithVoice, cloudinary: CloudinaryProvider) {
   return {
     id: message.id,
     conversationId: message.conversationId,
@@ -49,8 +50,13 @@ function toVoiceMessageDto(message: MessageWithVoice) {
       ? {
           durationSeconds: message.voiceMessage.durationSeconds,
           waveform: message.voiceMessage.waveform,
-          // URL authentifiée, jamais le chemin de stockage interne.
-          audioUrl: `/api/voice/${message.id}/audio`,
+          // CLOUDINARY : URL signée, recalculée à chaque appel (même principe
+          // que MessagesService.toAttachmentDto). LOCAL : chemin proxy
+          // inchangé, streamé via streamAudio.
+          audioUrl:
+            message.voiceMessage.audioStorageProvider === 'CLOUDINARY'
+              ? cloudinary.getSignedUrl(message.voiceMessage.audioStorageKey, 'video')
+              : `/api/voice/${message.id}/audio`,
           transcript: message.voiceMessage.transcript,
           detectedLanguage: message.voiceMessage.detectedLanguage
             ? {
@@ -70,11 +76,13 @@ function toVoiceMessageDto(message: MessageWithVoice) {
             },
             status: t.status,
             translatedText: t.translatedText,
-            // URL authentifiée, jamais le chemin de stockage interne — null
-            // tant que la synthèse vocale (phase 12) n'a pas abouti.
-            audioUrl: t.translatedAudioStorageKey
-              ? `/api/voice/${message.id}/translations/${t.targetLanguage.code}/audio`
-              : null,
+            // Null tant que la synthèse vocale (phase 12) n'a pas abouti ;
+            // sinon même logique CLOUDINARY/LOCAL que l'audio original.
+            audioUrl: !t.translatedAudioStorageKey
+              ? null
+              : t.translatedAudioStorageProvider === 'CLOUDINARY'
+                ? cloudinary.getSignedUrl(t.translatedAudioStorageKey, 'video')
+                : `/api/voice/${message.id}/translations/${t.targetLanguage.code}/audio`,
             usedVoiceCloning: t.usedVoiceCloning,
           })),
         }
@@ -101,6 +109,7 @@ export class VoiceService {
     private readonly speechToText: SpeechToTextService,
     private readonly languages: LanguagesService,
     private readonly pipeline: VoiceTranslationPipelineService,
+    private readonly cloudinary: CloudinaryProvider,
   ) {}
 
   async send(
@@ -146,7 +155,7 @@ export class VoiceService {
     }
 
     const waveform = this.parseWaveform(dto.waveform);
-    const stored = await this.storage.save(file.buffer, 'voice', extension);
+    const stored = await this.saveAudioFile(file.buffer, extension);
 
     const recipients = await this.otherMemberIds(dto.conversationId, userId);
     // Même logique que MessagesService.send : "livré" dès la création si un
@@ -165,6 +174,8 @@ export class VoiceService {
           voiceMessage: {
             create: {
               audioStorageKey: stored.key,
+              audioStorageProvider: stored.provider,
+              audioMimeType: file.mimetype,
               durationSeconds: dto.durationSeconds,
               waveform: waveform ?? undefined,
             },
@@ -178,7 +189,7 @@ export class VoiceService {
       }),
     ]);
 
-    const dtoOut = toVoiceMessageDto(message);
+    const dtoOut = toVoiceMessageDto(message, this.cloudinary);
     this.events.emitToUsers(recipients, 'message:new', dtoOut);
 
     await Promise.all(
@@ -200,10 +211,30 @@ export class VoiceService {
     return dtoOut;
   }
 
+  /** Upload d'un vocal — Cloudinary si configuré, sinon le disque local comme avant (même principe que MessagesService.saveMediaFile). */
+  private async saveAudioFile(
+    buffer: Buffer,
+    extension: string,
+  ): Promise<{ key: string; provider: MediaStorageProvider }> {
+    if (this.cloudinary.isConfigured()) {
+      const uploaded = await this.cloudinary.upload(buffer, 'voice', 'video');
+      return { key: uploaded.publicId, provider: 'CLOUDINARY' };
+    }
+    const stored = await this.storage.save(buffer, 'voice', extension);
+    return { key: stored.key, provider: 'LOCAL' };
+  }
+
   /** Vérifie l'appartenance à la conversation avant de streamer le fichier (section 23). */
   async streamAudio(userId: string, messageId: string): Promise<AudioStream> {
     const message = await this.findVoiceMessage(messageId);
     await this.assertMembership(userId, message.conversationId);
+
+    if (message.voiceMessage!.audioStorageProvider !== 'LOCAL') {
+      // Ne devrait jamais être atteint en usage normal : toVoiceMessageDto
+      // renvoie directement l'URL Cloudinary signée pour un vocal CLOUDINARY
+      // (même principe que MessagesService.streamAttachment).
+      throw new NotFoundException('Ce vocal ne se sert plus par cette route.');
+    }
 
     const key = message.voiceMessage!.audioStorageKey;
     if (!(await this.storage.exists(key))) {
@@ -232,6 +263,9 @@ export class VoiceService {
     );
     if (!translation || !translation.translatedAudioStorageKey) {
       throw new NotFoundException('Audio traduit introuvable.');
+    }
+    if (translation.translatedAudioStorageProvider !== 'LOCAL') {
+      throw new NotFoundException('Cet audio traduit ne se sert plus par cette route.');
     }
 
     const key = translation.translatedAudioStorageKey;
@@ -279,7 +313,7 @@ export class VoiceService {
     }
 
     if (message.deletedAt) {
-      return toVoiceMessageDto(message); // déjà supprimé : idempotent
+      return toVoiceMessageDto(message, this.cloudinary); // déjà supprimé : idempotent
     }
 
     const updated = await this.prisma.message.update({
@@ -289,8 +323,13 @@ export class VoiceService {
     });
 
     // La ligne base fait foi (déjà marquée supprimée) même si l'effacement
-    // physique échoue — StorageService.delete ne lève jamais (best-effort).
-    await this.storage.delete(message.voiceMessage.audioStorageKey);
+    // physique échoue — StorageService.delete/CloudinaryProvider.delete ne
+    // lèvent jamais (best-effort).
+    if (message.voiceMessage.audioStorageProvider === 'CLOUDINARY') {
+      await this.cloudinary.delete(message.voiceMessage.audioStorageKey, 'video', 'authenticated');
+    } else {
+      await this.storage.delete(message.voiceMessage.audioStorageKey);
+    }
 
     const recipients = await this.otherMemberIds(message.conversationId, userId);
     this.events.emitToUsers(recipients, 'message:deleted', {
@@ -298,7 +337,7 @@ export class VoiceService {
       conversationId: updated.conversationId,
     });
 
-    return toVoiceMessageDto(updated);
+    return toVoiceMessageDto(updated, this.cloudinary);
   }
 
   /** Corrige manuellement la langue détectée (section 19) — réservé à l'auteur du vocal. */
@@ -325,7 +364,7 @@ export class VoiceService {
       include: VOICE_MESSAGE_INCLUDE,
     });
 
-    const dtoOut = toVoiceMessageDto(updated);
+    const dtoOut = toVoiceMessageDto(updated, this.cloudinary);
     const allMembers = await this.allMemberIds(message.conversationId);
     this.events.emitToUsers(allMembers, 'message:updated', dtoOut);
     return dtoOut;
@@ -341,7 +380,7 @@ export class VoiceService {
   async getDetails(userId: string, messageId: string): Promise<VoiceMessageDto> {
     const message = await this.findVoiceMessage(messageId);
     await this.assertMembership(userId, message.conversationId);
-    return toVoiceMessageDto(message);
+    return toVoiceMessageDto(message, this.cloudinary);
   }
 
   private async findVoiceMessage(messageId: string): Promise<MessageWithVoice> {

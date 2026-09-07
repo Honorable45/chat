@@ -185,18 +185,13 @@ export class MessagesService {
    * Upload d'une image/vidéo — Cloudinary si configuré, sinon le disque
    * local comme avant (voir CloudinaryProvider, jamais un cutover forcé).
    * Jamais utilisé pour un vocal, qui reste toujours sur StorageService.
-   *
-   * isConfiguredForSignedMedia() (pas isConfigured()) : ces pièces jointes
-   * produisent toujours une URL SIGNÉE (toAttachmentDto), qui échoue sans
-   * CLOUDINARY_AUTH_TOKEN_KEY — uploader quand même créerait une pièce
-   * jointe à jamais illisible.
    */
   private async saveMediaFile(
     buffer: Buffer,
     extension: string,
     resourceType: 'image' | 'video',
   ): Promise<{ key: string; sizeBytes: number; storageProvider: MediaStorageProvider }> {
-    if (this.cloudinary.isConfiguredForSignedMedia()) {
+    if (this.cloudinary.isConfigured()) {
       const uploaded = await this.cloudinary.upload(buffer, 'attachment', resourceType);
       return {
         key: uploaded.publicId,

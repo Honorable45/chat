@@ -2,13 +2,7 @@ import { ServiceUnavailableException } from '@nestjs/common';
 import { v2 as cloudinarySdk } from 'cloudinary';
 import { buildCloudinaryPublicUrl, CloudinaryProvider } from './cloudinary.provider';
 
-const ENV_KEYS = [
-  'CLOUDINARY_CLOUD_NAME',
-  'CLOUDINARY_API_KEY',
-  'CLOUDINARY_API_SECRET',
-  'CLOUDINARY_AUTH_TOKEN_KEY',
-  'CLOUDINARY_SIGNED_URL_TTL_SECONDS',
-] as const;
+const ENV_KEYS = ['CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'] as const;
 
 describe('CloudinaryProvider', () => {
   let originalEnv: Record<string, string | undefined>;
@@ -46,28 +40,6 @@ describe('CloudinaryProvider', () => {
     });
   });
 
-  describe('isConfiguredForSignedMedia', () => {
-    it("renvoie false si configuré mais sans CLOUDINARY_AUTH_TOKEN_KEY (éviterait une pièce jointe à jamais illisible)", () => {
-      process.env.CLOUDINARY_CLOUD_NAME = 'demo';
-      process.env.CLOUDINARY_API_KEY = 'key';
-      process.env.CLOUDINARY_API_SECRET = 'secret';
-      expect(new CloudinaryProvider().isConfiguredForSignedMedia()).toBe(false);
-    });
-
-    it('renvoie false si CLOUDINARY_AUTH_TOKEN_KEY présent mais pas les 3 variables de base', () => {
-      process.env.CLOUDINARY_AUTH_TOKEN_KEY = 'token';
-      expect(new CloudinaryProvider().isConfiguredForSignedMedia()).toBe(false);
-    });
-
-    it('renvoie true seulement avec les 3 variables de base ET CLOUDINARY_AUTH_TOKEN_KEY', () => {
-      process.env.CLOUDINARY_CLOUD_NAME = 'demo';
-      process.env.CLOUDINARY_API_KEY = 'key';
-      process.env.CLOUDINARY_API_SECRET = 'secret';
-      process.env.CLOUDINARY_AUTH_TOKEN_KEY = 'token';
-      expect(new CloudinaryProvider().isConfiguredForSignedMedia()).toBe(true);
-    });
-  });
-
   describe('getSignedUrl', () => {
     it("échoue explicitement si Cloudinary n'est pas configuré (jamais un lien non protégé)", () => {
       const provider = new CloudinaryProvider();
@@ -76,28 +48,17 @@ describe('CloudinaryProvider', () => {
       );
     });
 
-    it('échoue explicitement si CLOUDINARY_AUTH_TOKEN_KEY manque, même configuré par ailleurs', () => {
+    it('renvoie une URL signée (aucun appel réseau, calcul local) quand configuré', () => {
       process.env.CLOUDINARY_CLOUD_NAME = 'demo';
       process.env.CLOUDINARY_API_KEY = 'key';
       process.env.CLOUDINARY_API_SECRET = 'secret';
-      const provider = new CloudinaryProvider();
-      expect(() => provider.getSignedUrl('glotta/attachment/abc', 'image')).toThrow(
-        ServiceUnavailableException,
-      );
-    });
-
-    it('renvoie une URL signée à jeton (aucun appel réseau, calcul local) quand tout est configuré', () => {
-      process.env.CLOUDINARY_CLOUD_NAME = 'demo';
-      process.env.CLOUDINARY_API_KEY = 'key';
-      process.env.CLOUDINARY_API_SECRET = 'secret';
-      process.env.CLOUDINARY_AUTH_TOKEN_KEY = 'token-key-hex';
       const provider = new CloudinaryProvider();
 
       const url = provider.getSignedUrl('glotta/attachment/abc', 'image');
 
       expect(url).toContain('demo');
       expect(url).toContain('glotta/attachment/abc');
-      expect(url).toContain('__cld_token__');
+      expect(url).toContain('authenticated');
     });
   });
 

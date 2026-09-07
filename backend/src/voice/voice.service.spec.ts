@@ -11,6 +11,7 @@ import { PresenceService } from '../presence/presence.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { VoiceTranslationPipelineService } from '../translations/pipeline/voice-translation-pipeline.service';
 import { SpeechToTextService } from '../translations/speech-to-text/speech-to-text.service';
+import { CloudinaryProvider } from '../uploads/cloudinary.provider';
 import { StorageService } from '../uploads/storage.service';
 import { EventsGateway } from '../websocket/events.gateway';
 import { VoiceService } from './voice.service';
@@ -74,6 +75,8 @@ function buildMessageWithVoice(
       id: 'voice-1',
       messageId: 'msg-1',
       audioStorageKey: 'voice/abc.wav',
+      audioStorageProvider: 'LOCAL' as const,
+      audioMimeType: 'audio/wav',
       durationSeconds: 12,
       waveform: null,
       detectedLanguageId: null,
@@ -106,6 +109,12 @@ describe('VoiceService', () => {
   let speechToText: { isConfigured: jest.Mock; transcribe: jest.Mock };
   let languages: { findEnabledByCode: jest.Mock };
   let pipeline: { runInBackground: jest.Mock };
+  let cloudinary: {
+    isConfigured: jest.Mock;
+    upload: jest.Mock;
+    getSignedUrl: jest.Mock;
+    delete: jest.Mock;
+  };
   let service: VoiceService;
 
   beforeEach(() => {
@@ -128,6 +137,14 @@ describe('VoiceService', () => {
     speechToText = { isConfigured: jest.fn().mockReturnValue(false), transcribe: jest.fn() };
     languages = { findEnabledByCode: jest.fn() };
     pipeline = { runInBackground: jest.fn() };
+    // Non configuré par défaut : chaque test existant continue de passer par
+    // StorageService (LOCAL) — voir describe('Cloudinary', ...) plus bas.
+    cloudinary = {
+      isConfigured: jest.fn().mockReturnValue(false),
+      upload: jest.fn(),
+      getSignedUrl: jest.fn(),
+      delete: jest.fn().mockResolvedValue(undefined),
+    };
     service = new VoiceService(
       prisma as unknown as PrismaService,
       storage as unknown as StorageService,
@@ -137,6 +154,7 @@ describe('VoiceService', () => {
       speechToText as unknown as SpeechToTextService,
       languages as unknown as LanguagesService,
       pipeline as unknown as VoiceTranslationPipelineService,
+      cloudinary as unknown as CloudinaryProvider,
     );
   });
 
@@ -402,6 +420,93 @@ describe('VoiceService', () => {
         }),
       );
       expect(result.voice?.languageOverridden).toBe(true);
+    });
+  });
+
+  describe('Cloudinary', () => {
+    it('send utilise Cloudinary quand configuré, jamais StorageService', async () => {
+      cloudinary.isConfigured.mockReturnValue(true);
+      cloudinary.upload.mockResolvedValue({ publicId: 'glotta/voice/new123' });
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      const created = buildMessageWithVoice(
+        {},
+        { audioStorageKey: 'glotta/voice/new123', audioStorageProvider: 'CLOUDINARY' },
+      );
+      prisma.$transaction.mockResolvedValue([created, {}]);
+
+      await service.send('user-1', { conversationId: 'conv-1', durationSeconds: 12 }, buildFile());
+
+      expect(cloudinary.upload).toHaveBeenCalledWith(expect.any(Buffer), 'voice', 'video');
+      expect(storage.save).not.toHaveBeenCalled();
+      expect(prisma.message.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          data: expect.objectContaining({
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+            voiceMessage: expect.objectContaining({
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+              create: expect.objectContaining({
+                audioStorageKey: 'glotta/voice/new123',
+                audioStorageProvider: 'CLOUDINARY',
+                audioMimeType: 'audio/wav',
+              }),
+            }),
+          }),
+        }),
+      );
+    });
+
+    it('renvoie une URL Cloudinary signée pour un vocal CLOUDINARY, jamais le chemin proxy', async () => {
+      cloudinary.getSignedUrl.mockReturnValue('https://res.cloudinary.com/demo/signed-voice-url');
+      const message = buildMessageWithVoice(
+        {},
+        { audioStorageKey: 'glotta/voice/abc', audioStorageProvider: 'CLOUDINARY' },
+      );
+      prisma.message.findUnique.mockResolvedValue(message);
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+
+      const result = await service.getDetails('user-1', 'msg-1');
+
+      expect(cloudinary.getSignedUrl).toHaveBeenCalledWith('glotta/voice/abc', 'video');
+      expect(result.voice?.audioUrl).toBe('https://res.cloudinary.com/demo/signed-voice-url');
+    });
+
+    it('streamAudio refuse pour un vocal CLOUDINARY (servi directement via audioUrl, jamais ce proxy)', async () => {
+      prisma.message.findUnique.mockResolvedValue(
+        buildMessageWithVoice(
+          {},
+          { audioStorageKey: 'glotta/voice/abc', audioStorageProvider: 'CLOUDINARY' },
+        ),
+      );
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+
+      await expect(service.streamAudio('user-1', 'msg-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(storage.exists).not.toHaveBeenCalled();
+    });
+
+    it('remove appelle cloudinary.delete (jamais storage.delete) pour un vocal CLOUDINARY', async () => {
+      prisma.message.findUnique.mockResolvedValue(
+        buildMessageWithVoice(
+          { senderId: 'user-1' },
+          { audioStorageKey: 'glotta/voice/abc', audioStorageProvider: 'CLOUDINARY' },
+        ),
+      );
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([]);
+      prisma.message.update.mockResolvedValue(
+        buildMessageWithVoice(
+          { senderId: 'user-1', deletedAt: new Date() },
+          { audioStorageKey: 'glotta/voice/abc', audioStorageProvider: 'CLOUDINARY' },
+        ),
+      );
+
+      await service.remove('user-1', 'msg-1');
+
+      expect(cloudinary.delete).toHaveBeenCalledWith('glotta/voice/abc', 'video', 'authenticated');
+      expect(storage.delete).not.toHaveBeenCalled();
     });
   });
 });

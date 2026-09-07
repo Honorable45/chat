@@ -442,13 +442,22 @@ model VoiceMessage {
   messageId String  @unique
   message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
-  // Clé de stockage interne (ex. "voice/<uuid>.webm"), jamais un chemin ou
-  // une URL exposée directement — le client obtient le fichier via
-  // GET /voice/:messageId/audio, qui vérifie l'appartenance à la
-  // conversation avant de le streamer (section 23).
-  audioStorageKey String
-  durationSeconds Int
-  waveform        Json? // liste de niveaux d'amplitude pour l'affichage
+  // Clé de stockage interne (ex. "voice/<uuid>.webm" en LOCAL, ou un
+  // public_id Cloudinary) — jamais un chemin ou une URL exposée directement.
+  // LOCAL : servi via GET /voice/:messageId/audio (section 23). CLOUDINARY :
+  // toVoiceMessageDto renvoie directement une URL signée (même principe que
+  // Attachment.storageProvider/Status.mediaStorageProvider).
+  audioStorageKey      String
+  audioStorageProvider MediaStorageProvider @default(LOCAL)
+  // Type MIME d'origine (ex. "audio/webm") — un public_id Cloudinary, à la
+  // différence d'une clé de stockage LOCAL, ne porte pas l'extension du
+  // fichier : nécessaire pour que VoiceTranslationPipelineService sache
+  // quel type déclarer au fournisseur de transcription. Nullable : jamais
+  // rétro-rempli pour les vocaux LOCAL déjà existants avant ce champ, qui
+  // continuent de dériver leur type depuis l'extension d'audioStorageKey.
+  audioMimeType        String?
+  durationSeconds      Int
+  waveform             Json? // liste de niveaux d'amplitude pour l'affichage
 
   detectedLanguageId String?
   detectedLanguage   Language? @relation("VoiceDetectedLanguage", fields: [detectedLanguageId], references: [id])
@@ -473,11 +482,10 @@ model MessageTranslation {
   targetLanguageId String
   targetLanguage   Language @relation("TranslationTargetLanguage", fields: [targetLanguageId], references: [id])
 
-  translatedText            String?
-  // Même principe que VoiceMessage.audioStorageKey : une clé de stockage
-  // interne, jamais un chemin exposé — servie via
-  // GET /voice/:messageId/translations/:languageCode/audio.
-  translatedAudioStorageKey String?
+  translatedText                 String?
+  // Même principe que VoiceMessage.audioStorageKey/audioStorageProvider.
+  translatedAudioStorageKey      String?
+  translatedAudioStorageProvider MediaStorageProvider @default(LOCAL)
 
   status           TranslationStatus @default(PENDING)
   usedVoiceCloning Boolean           @default(false) // vrai seulement si le consentement de l'expéditeur était actif

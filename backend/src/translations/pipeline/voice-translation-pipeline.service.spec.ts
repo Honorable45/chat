@@ -1,4 +1,5 @@
 import { PrismaService } from '../../prisma/prisma.service';
+import { CloudinaryProvider } from '../../uploads/cloudinary.provider';
 import { StorageService } from '../../uploads/storage.service';
 import { EventsGateway } from '../../websocket/events.gateway';
 import { SpeechToTextService } from '../speech-to-text/speech-to-text.service';
@@ -11,7 +12,12 @@ function buildMessage(overrides: Record<string, unknown> = {}) {
   return {
     id: 'msg-1',
     senderId: 'user-1',
-    voiceMessage: { id: 'voice-1', audioStorageKey: 'voice/abc.wav' },
+    voiceMessage: {
+      id: 'voice-1',
+      audioStorageKey: 'voice/abc.wav',
+      audioStorageProvider: 'LOCAL' as const,
+      audioMimeType: 'audio/wav',
+    },
     conversation: { members: [{ userId: 'user-1' }, { userId: 'user-2' }] },
     ...overrides,
   };
@@ -35,6 +41,12 @@ describe('VoiceTranslationPipelineService', () => {
   let textToSpeech: { isConfigured: jest.Mock; synthesize: jest.Mock };
   let voiceIdentity: { resolveVoiceReference: jest.Mock };
   let events: { emitToUsers: jest.Mock };
+  let cloudinary: {
+    isConfigured: jest.Mock;
+    upload: jest.Mock;
+    getSignedUrl: jest.Mock;
+    delete: jest.Mock;
+  };
   let service: VoiceTranslationPipelineService;
 
   beforeEach(() => {
@@ -60,6 +72,14 @@ describe('VoiceTranslationPipelineService', () => {
     textToSpeech = { isConfigured: jest.fn().mockReturnValue(false), synthesize: jest.fn() };
     voiceIdentity = { resolveVoiceReference: jest.fn().mockResolvedValue(null) };
     events = { emitToUsers: jest.fn() };
+    // Non configuré par défaut : chaque test existant continue de lire/écrire
+    // via StorageService (LOCAL) — voir describe('Cloudinary', ...) plus bas.
+    cloudinary = {
+      isConfigured: jest.fn().mockReturnValue(false),
+      upload: jest.fn(),
+      getSignedUrl: jest.fn(),
+      delete: jest.fn().mockResolvedValue(undefined),
+    };
     service = new VoiceTranslationPipelineService(
       prisma as unknown as PrismaService,
       storage as unknown as StorageService,
@@ -68,6 +88,7 @@ describe('VoiceTranslationPipelineService', () => {
       textToSpeech as unknown as TextToSpeechService,
       voiceIdentity as unknown as VoiceIdentityService,
       events as unknown as EventsGateway,
+      cloudinary as unknown as CloudinaryProvider,
     );
   });
 
@@ -321,6 +342,103 @@ describe('VoiceTranslationPipelineService', () => {
         expect.objectContaining({
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
           data: expect.objectContaining({ status: 'COMPLETED' }),
+        }),
+      );
+    });
+  });
+
+  describe('Cloudinary', () => {
+    it('télécharge le vocal via son URL signée pour le transcrire (jamais storage.readFile)', async () => {
+      prisma.message.findUnique.mockResolvedValue(
+        buildMessage({
+          voiceMessage: {
+            id: 'voice-1',
+            audioStorageKey: 'glotta/voice/abc',
+            audioStorageProvider: 'CLOUDINARY',
+            audioMimeType: 'audio/webm',
+          },
+        }),
+      );
+      cloudinary.getSignedUrl.mockReturnValue('https://res.cloudinary.com/demo/signed-voice');
+      const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        arrayBuffer: () => Promise.resolve(new ArrayBuffer(4)),
+      } as never);
+      speechToText.isConfigured.mockReturnValue(true);
+      speechToText.transcribe.mockResolvedValue({ text: 'Bonjour', languageCode: 'fr' });
+      prisma.language.findUnique.mockResolvedValue({ id: 'lang-fr', code: 'fr' });
+
+      service.runInBackground('msg-1');
+      await flush();
+
+      expect(cloudinary.getSignedUrl).toHaveBeenCalledWith('glotta/voice/abc', 'video');
+      expect(fetchSpy).toHaveBeenCalledWith('https://res.cloudinary.com/demo/signed-voice');
+      expect(storage.readFile).not.toHaveBeenCalled();
+      expect(speechToText.transcribe).toHaveBeenCalledWith(expect.any(Buffer), 'audio/webm');
+      fetchSpy.mockRestore();
+    });
+
+    it('diffuse translation:failed (stage transcription) si le téléchargement Cloudinary échoue', async () => {
+      prisma.message.findUnique.mockResolvedValue(
+        buildMessage({
+          voiceMessage: {
+            id: 'voice-1',
+            audioStorageKey: 'glotta/voice/abc',
+            audioStorageProvider: 'CLOUDINARY',
+            audioMimeType: 'audio/webm',
+          },
+        }),
+      );
+      cloudinary.getSignedUrl.mockReturnValue('https://res.cloudinary.com/demo/signed-voice');
+      const fetchSpy = jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValue({ ok: false, status: 404 } as never);
+      speechToText.isConfigured.mockReturnValue(true);
+
+      service.runInBackground('msg-1');
+      await flush();
+
+      expect(speechToText.transcribe).not.toHaveBeenCalled();
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-1', 'user-2'],
+        'translation:failed',
+        expect.objectContaining({ stage: 'transcription' }),
+      );
+      fetchSpy.mockRestore();
+    });
+
+    it('la synthèse vocale (TTS) uploade sur Cloudinary quand configuré, jamais StorageService', async () => {
+      mockSuccessfulTranslationSetup();
+      cloudinary.isConfigured.mockReturnValue(true);
+      cloudinary.upload.mockResolvedValue({ publicId: 'glotta/translated-voice/xyz' });
+      cloudinary.getSignedUrl.mockReturnValue('https://res.cloudinary.com/demo/signed-tts');
+      textToSpeech.isConfigured.mockReturnValue(true);
+      textToSpeech.synthesize.mockResolvedValue({ audio: Buffer.alloc(5), mimeType: 'audio/mpeg' });
+
+      service.runInBackground('msg-1');
+      await flush();
+
+      expect(cloudinary.upload).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'translated-voice',
+        'video',
+      );
+      expect(storage.save).not.toHaveBeenCalled();
+      expect(prisma.messageTranslation.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          data: expect.objectContaining({
+            translatedAudioStorageKey: 'glotta/translated-voice/xyz',
+            translatedAudioStorageProvider: 'CLOUDINARY',
+          }),
+        }),
+      );
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-1', 'user-2'],
+        'translation:completed',
+        expect.objectContaining({
+          stage: 'tts',
+          audioUrl: 'https://res.cloudinary.com/demo/signed-tts',
         }),
       );
     });

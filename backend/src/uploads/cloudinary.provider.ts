@@ -8,8 +8,6 @@ export interface CloudinaryUploadResult {
   publicId: string;
 }
 
-const DEFAULT_SIGNED_URL_TTL_SECONDS = 6 * 60 * 60; // 6h
-
 /**
  * Pure, sans injection — une URL Cloudinary publique ne dépend que du
  * `cloud_name` (jamais un secret), contrairement à une URL signée. Utilisée
@@ -44,16 +42,11 @@ export function buildCloudinaryPublicUrl(publicId: string): string | null {
 export class CloudinaryProvider {
   private readonly logger = new Logger(CloudinaryProvider.name);
   private readonly configured: boolean;
-  private readonly authTokenKey?: string;
-  private readonly signedUrlTtlSeconds: number;
 
   constructor() {
     const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
     const apiKey = process.env.CLOUDINARY_API_KEY;
     const apiSecret = process.env.CLOUDINARY_API_SECRET;
-    this.authTokenKey = process.env.CLOUDINARY_AUTH_TOKEN_KEY;
-    this.signedUrlTtlSeconds =
-      Number(process.env.CLOUDINARY_SIGNED_URL_TTL_SECONDS) || DEFAULT_SIGNED_URL_TTL_SECONDS;
 
     this.configured = Boolean(cloudName && apiKey && apiSecret);
     if (this.configured) {
@@ -67,21 +60,6 @@ export class CloudinaryProvider {
 
   isConfigured(): boolean {
     return this.configured;
-  }
-
-  /**
-   * Gate à utiliser pour tout média qui devra produire une URL SIGNÉE
-   * (messages/statuts — jamais les avatars, publics via getPublicUrl) :
-   * sans CLOUDINARY_AUTH_TOKEN_KEY, getSignedUrl échoue toujours (voir plus
-   * bas), donc uploader vers Cloudinary sans cette clé créerait une pièce
-   * jointe CLOUDINARY à jamais illisible (toute lecture de la conversation
-   * échouerait en boucle) — bug réel constaté en vérification live, jamais
-   * repérable par un simple isConfigured(). sendImage/sendMedia et
-   * StatusesService.create (IMAGE/VIDEO) doivent utiliser cette méthode,
-   * pas isConfigured(), pour décider d'uploader vers Cloudinary.
-   */
-  isConfiguredForSignedMedia(): boolean {
-    return this.configured && Boolean(this.authTokenKey);
   }
 
   async upload(
@@ -116,26 +94,21 @@ export class CloudinaryProvider {
   }
 
   /**
-   * URL à expiration — TOUJOURS régénérée à la demande (chaque DTO qui
-   * embarque une pièce jointe/un média la recalcule), jamais mise en cache
-   * au-delà de sa propre requête : un client qui garde une page ouverte plus
-   * longtemps que le TTL doit recharger la conversation pour une image
-   * valide, exactement le compromis attendu d'un lien à durée de vie limitée.
+   * URL signée (paramètre `s--...--` calculé avec l'API secret, sans appel
+   * réseau) — n'expire pas dans le temps, contrairement à un `auth_token`
+   * Cloudinary (fonctionnalité "Token-based authentication", qui nécessite
+   * un Private CDN payant, indisponible sur le plan gratuit). Le `public_id`
+   * généré par Cloudinary à l'upload est un identifiant aléatoire non listé
+   * publiquement : la protection réelle vient de ne jamais exposer cet
+   * identifiant en dehors d'une réponse API authentifiée (toAttachmentDto/
+   * toStatusDto), pas d'une expiration de l'URL elle-même.
    */
   getSignedUrl(publicId: string, resourceType: CloudinaryResourceType): string {
     this.assertConfigured();
-    if (!this.authTokenKey) {
-      // Échoue explicitement plutôt que de servir un lien non protégé
-      // (section 40 : jamais faire semblant qu'une capacité existe).
-      throw new ServiceUnavailableException(
-        'CLOUDINARY_AUTH_TOKEN_KEY manquant : impossible de générer une URL signée (à générer dans Cloudinary → Settings → Security).',
-      );
-    }
     return cloudinary.url(publicId, {
       resource_type: resourceType,
       type: 'authenticated',
       sign_url: true,
-      auth_token: { key: this.authTokenKey, duration: this.signedUrlTtlSeconds },
     });
   }
 

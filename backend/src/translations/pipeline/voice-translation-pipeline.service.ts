@@ -1,10 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
+import type { MediaStorageProvider } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   ALLOWED_AUDIO_MIME_TYPES,
   EXTENSION_TO_MIME_TYPE,
 } from '../../uploads/audio-upload.constants';
+import { CloudinaryProvider } from '../../uploads/cloudinary.provider';
 import { StorageService } from '../../uploads/storage.service';
 import { EventsGateway } from '../../websocket/events.gateway';
 import { SpeechToTextService } from '../speech-to-text/speech-to-text.service';
@@ -49,6 +51,7 @@ export class VoiceTranslationPipelineService {
     private readonly textToSpeech: TextToSpeechService,
     private readonly voiceIdentity: VoiceIdentityService,
     private readonly events: EventsGateway,
+    private readonly cloudinary: CloudinaryProvider,
   ) {}
 
   runInBackground(messageId: string): void {
@@ -73,6 +76,8 @@ export class VoiceTranslationPipelineService {
     const transcription = await this.runTranscription(
       messageId,
       message.voiceMessage.audioStorageKey,
+      message.voiceMessage.audioStorageProvider,
+      message.voiceMessage.audioMimeType,
       participantIds,
     );
     if (!transcription) return;
@@ -83,6 +88,8 @@ export class VoiceTranslationPipelineService {
   private async runTranscription(
     messageId: string,
     storageKey: string,
+    storageProvider: MediaStorageProvider,
+    audioMimeType: string | null,
     participantIds: string[],
   ): Promise<TranscriptionOutcome | null> {
     if (!this.speechToText.isConfigured()) return null;
@@ -93,9 +100,14 @@ export class VoiceTranslationPipelineService {
     });
 
     try {
-      const audio = await this.storage.readFile(storageKey);
+      const audio = await this.readAudioFile(storageKey, storageProvider);
+      // audioMimeType (renseigné à l'envoi, voir VoiceService.send) fait foi
+      // quand présent — un public_id Cloudinary ne porte pas d'extension
+      // exploitable, contrairement à une clé LOCAL. Repli sur l'extension
+      // uniquement pour les vocaux LOCAL envoyés avant l'ajout de ce champ.
       const extension = storageKey.split('.').pop() ?? '';
-      const mimeType = EXTENSION_TO_MIME_TYPE[extension] ?? 'application/octet-stream';
+      const mimeType =
+        audioMimeType ?? EXTENSION_TO_MIME_TYPE[extension] ?? 'application/octet-stream';
 
       const result = await this.speechToText.transcribe(audio, mimeType);
       const language = result.languageCode
@@ -286,12 +298,13 @@ export class VoiceTranslationPipelineService {
         voiceReference ?? undefined,
       );
       const extension = ALLOWED_AUDIO_MIME_TYPES[result.mimeType] ?? 'bin';
-      const stored = await this.storage.save(result.audio, 'translated-voice', extension);
+      const stored = await this.saveAudioFile(result.audio, extension);
 
       await this.prisma.messageTranslation.update({
         where: { id: translationId },
         data: {
           translatedAudioStorageKey: stored.key,
+          translatedAudioStorageProvider: stored.provider,
           usedVoiceCloning: voiceReference !== null,
         },
       });
@@ -300,7 +313,10 @@ export class VoiceTranslationPipelineService {
         messageId,
         stage: 'tts',
         targetLanguageCode: target.code,
-        audioUrl: `/api/voice/${messageId}/translations/${target.code}/audio`,
+        audioUrl:
+          stored.provider === 'CLOUDINARY'
+            ? this.cloudinary.getSignedUrl(stored.key, 'video')
+            : `/api/voice/${messageId}/translations/${target.code}/audio`,
         usedVoiceCloning: voiceReference !== null,
       });
     } catch (error) {
@@ -315,5 +331,35 @@ export class VoiceTranslationPipelineService {
         targetLanguageCode: target.code,
       });
     }
+  }
+
+  /**
+   * Lit les octets d'un vocal quel que soit son fournisseur — LOCAL directement
+   * depuis le disque, CLOUDINARY via un téléchargement HTTP de l'URL signée
+   * (aucun accès disque possible sur un public_id Cloudinary). Nécessaire pour
+   * la transcription (STT), qui a besoin du buffer complet, jamais d'une URL.
+   */
+  private async readAudioFile(key: string, provider: MediaStorageProvider): Promise<Buffer> {
+    if (provider === 'LOCAL') return this.storage.readFile(key);
+
+    const url = this.cloudinary.getSignedUrl(key, 'video');
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Téléchargement Cloudinary du vocal échoué (HTTP ${response.status}).`);
+    }
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  /** Upload de l'audio traduit (TTS) — même principe que VoiceService.saveAudioFile. */
+  private async saveAudioFile(
+    buffer: Buffer,
+    extension: string,
+  ): Promise<{ key: string; provider: MediaStorageProvider }> {
+    if (this.cloudinary.isConfigured()) {
+      const uploaded = await this.cloudinary.upload(buffer, 'translated-voice', 'video');
+      return { key: uploaded.publicId, provider: 'CLOUDINARY' };
+    }
+    const stored = await this.storage.save(buffer, 'translated-voice', extension);
+    return { key: stored.key, provider: 'LOCAL' };
   }
 }

@@ -134,11 +134,7 @@ export class StatusesService {
       const extension = this.validateMediaFile(dto.type, file);
       // VOICE reste toujours sur StorageService, jamais Cloudinary — seul le
       // périmètre convenu (images/vidéos) peut y basculer.
-      // isConfiguredForSignedMedia() (pas isConfigured()) : toStatusDto
-      // produit une URL SIGNÉE pour IMAGE/VIDEO, qui échoue sans
-      // CLOUDINARY_AUTH_TOKEN_KEY — mêmes conséquences qu'un message (voir
-      // MessagesService.saveMediaFile) si on uploadait quand même.
-      if (dto.type !== 'VOICE' && this.cloudinary.isConfiguredForSignedMedia()) {
+      if (dto.type !== 'VOICE' && this.cloudinary.isConfigured()) {
         const uploaded = await this.cloudinary.upload(
           file!.buffer,
           'status',
