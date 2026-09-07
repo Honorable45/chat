@@ -353,24 +353,23 @@ function ChatPageInner() {
 
   // Sélectionne, au premier chargement : la conversation demandée par
   // `?c=<id>` si présente (voir profile/[userId]/page.tsx → "Envoyer un
-  // message", qui vient de la créer via POST /conversations), sinon la plus
-  // récente. queueMicrotask : voir le commentaire équivalent dans
+  // message", qui vient de la créer via POST /conversations) — jamais de
+  // sélection automatique de la conversation la plus récente sinon : l'app
+  // s'ouvre toujours sur la liste (façon WhatsApp Web), jamais directement
+  // dans une discussion, voir l'état vide "Sélectionnez une conversation"
+  // plus bas. queueMicrotask : voir le commentaire équivalent dans
   // auth-context.tsx — le corps de l'effet ne doit jamais déclencher de
   // setState de façon synchrone, même via une fonction async
   // (react-hooks/set-state-in-effect).
   useEffect(() => {
     if (loadingConversations || selectedId) return;
     const targetId = searchParams.get("c");
-    if (!targetId && conversations.length === 0) return;
+    if (!targetId) return;
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
-      if (targetId) {
-        router.replace("/chat");
-        void openConversationById(targetId);
-      } else {
-        void selectConversation(conversations[0]);
-      }
+      router.replace("/chat");
+      void openConversationById(targetId);
     });
     return () => {
       cancelled = true;
