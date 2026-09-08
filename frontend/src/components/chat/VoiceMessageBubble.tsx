@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { LanguagesIcon, MoreVerticalIcon, PauseIcon, PlayIcon, TrashIcon } from "@/components/icons";
-import { api } from "@/lib/api";
+import { isOwnBackendUrl, resolveMediaSrc } from "@/lib/api";
 import { formatDuration } from "@/lib/format";
 import { getAccessToken } from "@/lib/token-store";
 import type { VoiceDetails } from "@/lib/types";
@@ -12,7 +12,8 @@ import type { VoiceDetails } from "@/lib/types";
 // amplitude audio (celle-ci n'est pas exposée par GET /conversations/:id/
 // messages, seulement via l'événement socket "message:new" au moment de
 // l'envoi — voir VoiceService côté backend). La lecture, elle, est bien
-// réelle : streamée et authentifiée depuis /voice/:id/audio.
+// réelle : depuis voice.audioUrl (URL Cloudinary signée, ou proxy backend
+// authentifié en LOCAL — voir fetchAsBlob/loadSource plus bas).
 function decorativeBars(seed: string, count = 28): number[] {
   let h = 0;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
@@ -24,16 +25,29 @@ function decorativeBars(seed: string, count = 28): number[] {
   return bars;
 }
 
-async function fetchAsBlob(url: string): Promise<Blob | null> {
-  const token = getAccessToken();
-  const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : undefined }).catch(
-    () => null,
-  );
+/**
+ * `audioUrl` vient toujours du DTO (voir VoiceDetails/MessageTranslationDetail
+ * côté types.ts), jamais reconstruite depuis le seul messageId : selon le
+ * fournisseur de stockage, c'est soit une URL Cloudinary déjà signée
+ * (publique, jamais besoin d'en-tête d'autorisation — et un fetch direct
+ * sans passer par resolveMediaSrc), soit un chemin proxy relatif vers ce
+ * backend (`/api/voice/...`, protégé par JwtAuthGuard, qui a besoin des deux)
+ * — même distinction que AuthenticatedImage/isOwnBackendUrl pour les autres
+ * médias. Bug réel constaté en prod : reconstruire l'URL proxy à partir du
+ * seul messageId (ancien code) 404ait pour tout vocal stocké sur Cloudinary,
+ * le stream `/voice/:id/audio` ne servant plus que les fichiers LOCAL.
+ */
+async function fetchAsBlob(audioUrl: string): Promise<Blob | null> {
+  const needsAuth = isOwnBackendUrl(audioUrl);
+  const token = needsAuth ? getAccessToken() : null;
+  const res = await fetch(resolveMediaSrc(audioUrl) ?? audioUrl, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  }).catch(() => null);
   if (!res?.ok) return null;
   return res.blob();
 }
 
-function TranslatedAudioButton({ messageId, languageCode }: { messageId: string; languageCode: string }) {
+function TranslatedAudioButton({ audioUrl }: { audioUrl: string }) {
   const [playing, setPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
@@ -52,7 +66,7 @@ function TranslatedAudioButton({ messageId, languageCode }: { messageId: string;
       return;
     }
     if (!audioRef.current) {
-      const blob = await fetchAsBlob(api.voice.translatedAudioUrl(messageId, languageCode));
+      const blob = await fetchAsBlob(audioUrl);
       if (!blob) return;
       const url = URL.createObjectURL(blob);
       objectUrlRef.current = url;
@@ -146,20 +160,27 @@ export function VoiceMessageBubble({
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, [menuOpen]);
 
-  /** Charge (une seule fois par piste, voir les refs dédiées) l'audio original ou traduit, selon `source`. */
+  /**
+   * Charge (une seule fois par piste, voir les refs dédiées) l'audio
+   * original ou traduit, selon `source` — toujours depuis l'URL déjà
+   * résolue par le DTO (`voice.audioUrl`/`relevantTranslation.audioUrl`),
+   * jamais reconstruite depuis le seul messageId (voir le commentaire sur
+   * fetchAsBlob) : cette dernière 404ait pour tout vocal stocké sur
+   * Cloudinary, un bug réel qui rendait TOUT vocal illisible depuis la
+   * migration du stockage.
+   */
   async function loadSource(source: "original" | "translated"): Promise<HTMLAudioElement> {
     const audioRef = source === "translated" ? translatedAudioRef : originalAudioRef;
     if (audioRef.current) return audioRef.current;
-    if (source === "translated" && !relevantTranslation?.audioUrl) {
-      throw new Error("Audio traduit indisponible.");
+
+    const rawUrl = source === "translated" ? relevantTranslation?.audioUrl : voice?.audioUrl;
+    if (!rawUrl) {
+      throw new Error(source === "translated" ? "Audio traduit indisponible." : "Audio introuvable.");
     }
 
-    const token = getAccessToken();
-    const requestUrl =
-      source === "translated"
-        ? api.voice.translatedAudioUrl(messageId, relevantTranslation!.targetLanguage.code)
-        : api.voice.audioUrl(messageId);
-    const res = await fetch(requestUrl, {
+    const needsAuth = isOwnBackendUrl(rawUrl);
+    const token = needsAuth ? getAccessToken() : null;
+    const res = await fetch(resolveMediaSrc(rawUrl) ?? rawUrl, {
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     });
     if (!res.ok) throw new Error("Audio introuvable.");
@@ -270,7 +291,8 @@ export function VoiceMessageBubble({
           className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
             own ? "bg-black/15" : "bg-white/10"
           }`}
-          aria-label={state === "playing" ? "Mettre en pause" : "Écouter"}
+          aria-label={state === "error" ? "Réessayer" : state === "playing" ? "Mettre en pause" : "Écouter"}
+          title={state === "error" ? "Ce fichier audio n'est plus disponible. Cliquez pour réessayer." : undefined}
         >
           {state === "loading" ? (
             <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
@@ -281,23 +303,35 @@ export function VoiceMessageBubble({
           )}
         </button>
 
-        <div className="flex h-6 flex-1 items-center gap-[2px]">
-          {bars.map((h, i) => (
-            <span
-              key={i}
-              className="w-[3px] rounded-full transition-opacity"
-              style={{
-                height: `${h * 100}%`,
-                background: "currentColor",
-                opacity: i < played ? 1 : own ? 0.45 : 0.3,
-              }}
-            />
-          ))}
-        </div>
+        {state === "error" ? (
+          // Cas le plus fréquent : un vocal enregistré avant la migration
+          // du stockage vers Cloudinary (voir CloudinaryProvider), dont le
+          // fichier vivait sur le disque local de Render — effacé sans
+          // retour possible à chaque redéploiement (disque éphémère). Rien
+          // à retenter en pratique, mais on laisse le bouton actif plutôt
+          // que de supposer à tort une panne réseau simplement transitoire.
+          <span className="flex-1 truncate text-xs italic text-muted">Audio indisponible</span>
+        ) : (
+          <div className="flex h-6 flex-1 items-center gap-[2px]">
+            {bars.map((h, i) => (
+              <span
+                key={i}
+                className="w-[3px] rounded-full transition-opacity"
+                style={{
+                  height: `${h * 100}%`,
+                  background: "currentColor",
+                  opacity: i < played ? 1 : own ? 0.45 : 0.3,
+                }}
+              />
+            ))}
+          </div>
+        )}
 
-        <span className={`shrink-0 text-xs tabular-nums ${own ? "opacity-90" : "text-muted"}`}>
-          {state === "error" ? "—" : formatDuration(duration ?? 0)}
-        </span>
+        {state !== "error" && (
+          <span className={`shrink-0 text-xs tabular-nums ${own ? "opacity-90" : "text-muted"}`}>
+            {formatDuration(duration ?? 0)}
+          </span>
+        )}
 
         <div ref={menuRef} className="relative shrink-0">
           <button
@@ -361,9 +395,7 @@ export function VoiceMessageBubble({
             </span>
             {relevantTranslation.translatedText}
           </span>
-          {relevantTranslation.audioUrl && (
-            <TranslatedAudioButton messageId={messageId} languageCode={relevantTranslation.targetLanguage.code} />
-          )}
+          {relevantTranslation.audioUrl && <TranslatedAudioButton audioUrl={relevantTranslation.audioUrl} />}
         </div>
       )}
 

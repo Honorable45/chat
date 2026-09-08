@@ -257,6 +257,8 @@ export interface MessageTranslationDetail {
  * `voice: {...}` distincte de `MessageDto`, voir normalize-message.ts) —
  * jamais par `GET /conversations/:id/messages`. */
 export interface VoiceDetails {
+  /** Déjà résolue côté serveur (URL signée Cloudinary, ou chemin proxy `/api/voice/:id/audio` en LOCAL) — ne jamais la reconstruire depuis le seul messageId, voir VoiceMessageBubble. */
+  audioUrl: string;
   durationSeconds: number;
   waveform: number[] | null;
   transcript: string | null;
