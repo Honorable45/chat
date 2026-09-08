@@ -86,6 +86,12 @@ export const MESSAGE_INCLUDE = {
   // `orderBy` — indispensable pour qu'un album se réaffiche toujours dans
   // l'ordre choisi par l'expéditeur.
   attachments: { select: MESSAGE_ATTACHMENTS_SELECT, orderBy: { position: 'asc' } },
+  // Résumé du message cité (section "répondre à un message") — un simple
+  // replyToId ne suffit pas au frontend pour afficher l'aperçu cité sans
+  // dépendre de la page actuellement chargée (le message cité peut être
+  // bien plus ancien). Jamais le message cité en entier (pas ses propres
+  // pièces jointes/réactions) : juste de quoi construire un résumé compact.
+  replyTo: { select: { id: true, senderId: true, type: true, text: true } },
 } satisfies Prisma.MessageInclude;
 
 type MessageAttachment = {
