@@ -5,6 +5,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { BouncingDots } from "@/components/BouncingDots";
 import { ChatIcon } from "@/components/icons";
 import { CallOverlay } from "@/components/chat/CallOverlay";
+import { MinimizedCallBar } from "@/components/chat/MinimizedCallBar";
 import { CallsPanel } from "@/components/chat/CallsPanel";
 import { ChatWindow } from "@/components/chat/ChatWindow";
 import { ContactsPanel } from "@/components/chat/ContactsPanel";
@@ -563,6 +564,18 @@ function ChatPageInner() {
 
   const call = useCall(Boolean(user), applyCallMessage);
 
+  // État d'affichage pur (aucun lien avec useCall/WebRTC) — permet de réduire
+  // l'appel en cours en une pastille flottante pour continuer à écrire des
+  // messages sans raccrocher (façon WhatsApp). Toujours remis à false à la
+  // fin d'un appel et à l'arrivée d'un nouvel appel entrant, pour qu'un appel
+  // ne démarre/sonne jamais réduit par défaut.
+  const [callMinimized, setCallMinimized] = useState(false);
+  useEffect(() => {
+    if (call.phase === "idle" || call.phase === "incoming") {
+      queueMicrotask(() => setCallMinimized(false));
+    }
+  }, [call.phase]);
+
   function startCall(kind: "AUDIO" | "VIDEO") {
     if (!selected?.otherParticipant) return;
     void call.start(selected.id, selected.otherParticipant.id, kind);
@@ -865,7 +878,7 @@ function ChatPageInner() {
         <GroupCreateModal onClose={() => setShowNewGroup(false)} onCreated={onGroupCreated} />
       )}
 
-      {call.phase !== "idle" && (
+      {call.phase !== "idle" && !callMinimized && (
         <CallOverlay
           phase={call.phase}
           kind={call.kind}
@@ -882,6 +895,18 @@ function ChatPageInner() {
           onHangUp={() => void call.hangUp()}
           onToggleMute={call.toggleMute}
           onToggleVideo={() => void call.toggleVideo()}
+          onMinimize={() => setCallMinimized(true)}
+        />
+      )}
+
+      {call.phase !== "idle" && callMinimized && (
+        <MinimizedCallBar
+          peer={callPeer}
+          phase={call.phase}
+          kind={call.kind}
+          durationSeconds={call.durationSeconds}
+          onExpand={() => setCallMinimized(false)}
+          onHangUp={() => void call.hangUp()}
         />
       )}
 

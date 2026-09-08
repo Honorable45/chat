@@ -2,18 +2,20 @@
 
 import type { RefObject } from "react";
 import { Avatar } from "@/components/Avatar";
-import { MicIcon, MicOffIcon, PhoneIcon, PhoneOffIcon, VideoIcon, VideoOffIcon } from "@/components/icons";
+import { ChevronDownIcon, MicIcon, MicOffIcon, PhoneIcon, PhoneOffIcon, VideoIcon, VideoOffIcon } from "@/components/icons";
 import { displayName } from "@/lib/format";
 import type { CallKind, CallPhase } from "@/lib/use-call";
 import type { ConversationParticipant } from "@/lib/types";
 
-function formatDuration(totalSeconds: number): string {
+// Exportées pour MinimizedCallBar.tsx — jamais dupliquées, même format de
+// durée/statut affiché réduit ou en plein écran.
+export function formatDuration(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-function statusLabel(phase: CallPhase, kind: CallKind, durationSeconds: number, error: string | null): string {
+export function statusLabel(phase: CallPhase, kind: CallKind, durationSeconds: number, error: string | null): string {
   switch (phase) {
     case "outgoing":
       return kind === "VIDEO" ? "Appel vidéo en cours..." : "Appel en cours...";
@@ -58,6 +60,7 @@ export function CallOverlay({
   onHangUp,
   onToggleMute,
   onToggleVideo,
+  onMinimize,
 }: {
   phase: CallPhase;
   kind: CallKind;
@@ -74,6 +77,10 @@ export function CallOverlay({
   onHangUp: () => void;
   onToggleMute: () => void;
   onToggleVideo: () => void;
+  /** Réduit l'appel en une pastille flottante (voir MinimizedCallBar) —
+   * jamais proposé en phase "incoming" : répondre/refuser doit rester la
+   * seule action possible tant que l'appel n'a pas été décidé. */
+  onMinimize: () => void;
 }) {
   const name = peer ? displayName(peer) : "Appel";
   const showRemoteVideo = phase === "active" && remoteVideoEnabled;
@@ -132,13 +139,22 @@ export function CallOverlay({
         )}
 
         {phase === "outgoing" && (
-          <button
-            onClick={onHangUp}
-            aria-label="Annuler l'appel"
-            className="flex h-14 w-14 items-center justify-center rounded-full bg-danger text-white transition hover:opacity-90"
-          >
-            <PhoneOffIcon size={24} />
-          </button>
+          <>
+            <button
+              onClick={onMinimize}
+              aria-label="Réduire l'appel"
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-white/15 text-white transition hover:bg-white/25"
+            >
+              <ChevronDownIcon size={22} />
+            </button>
+            <button
+              onClick={onHangUp}
+              aria-label="Annuler l'appel"
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-danger text-white transition hover:opacity-90"
+            >
+              <PhoneOffIcon size={24} />
+            </button>
+          </>
         )}
 
         {phase === "active" && (
@@ -160,6 +176,13 @@ export function CallOverlay({
               }`}
             >
               {videoEnabled ? <VideoIcon size={22} /> : <VideoOffIcon size={22} />}
+            </button>
+            <button
+              onClick={onMinimize}
+              aria-label="Réduire l'appel"
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-white/15 text-white transition hover:bg-white/25"
+            >
+              <ChevronDownIcon size={22} />
             </button>
             <button
               onClick={onHangUp}

@@ -144,6 +144,9 @@ export const VideoOffIcon = (p: IconProps) =>
 
 export const ChevronLeftIcon = (p: IconProps) => base(<path d="m15 5-7 7 7 7" />, p);
 
+/** "Réduire l'appel" (voir CallOverlay/MinimizedCallBar). */
+export const ChevronDownIcon = (p: IconProps) => base(<path d="m5 9 7 7 7-7" />, p);
+
 export const CalendarIcon = (p: IconProps) =>
   base(
     <>
