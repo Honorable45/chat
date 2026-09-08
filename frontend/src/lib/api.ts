@@ -453,8 +453,6 @@ export const api = {
     getPublicKey: () => request<{ publicKey: string }>("/push/public-key", { auth: false }),
     subscribe: (subscription: PushSubscriptionJSON) =>
       request<void>("/push/subscribe", { method: "POST", body: subscription }),
-    unsubscribe: (endpoint: string) =>
-      request<void>("/push/subscribe", { method: "DELETE", body: { endpoint } }),
   },
   calls: {
     // RTCIceServer est un type global du lib DOM (forme identique au JSON renvoyé par le backend).

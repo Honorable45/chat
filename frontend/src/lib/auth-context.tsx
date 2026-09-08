@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { api, API_URL, ApiError, type LoginInput, type RegisterInput } from "./api";
+import { isPushSupported, subscribeToPush } from "./push";
 import { clearTokens, getAccessToken, setTokens } from "./token-store";
 import type { Me } from "./types";
 
@@ -71,10 +72,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [router]);
 
   // Enregistre le service worker (PWA — notifications push hors de l'app,
-  // voir public/sw.js) une seule fois, une fois authentifié — ne demande
-  // jamais la permission ni ne s'abonne ici, juste le prépare : c'est
-  // NotificationsSection (Paramètres) qui déclenche l'abonnement, sur un
-  // geste utilisateur explicite.
+  // voir public/sw.js) une seule fois, une fois authentifié.
   const swRegistered = useRef(false);
   useEffect(() => {
     if (status !== "authenticated" || swRegistered.current) return;
@@ -96,6 +94,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Silencieux : l'onglet Notifications des Paramètres retombe sur
         // l'état "non supporté" s'il ne trouve pas de registration active.
       });
+  }, [status]);
+
+  // Notifications push activées par défaut, non désactivables depuis l'app
+  // (voir PushNotificationsRow, qui ne propose plus qu'un bouton "Activer"
+  // en cas d'échec, jamais de coupure) : contrairement à l'ancien
+  // comportement (opt-in manuel dans Paramètres), on déclenche l'abonnement
+  // ici, dès la première session authentifiée sur cet appareil.
+  // `Notification.requestPermission()` ne réaffiche jamais l'invite
+  // navigateur une fois la décision de l'utilisateur prise (accordée ou
+  // refusée) — sûr à retenter à chaque connexion, y compris pour
+  // resynchroniser silencieusement un appareil dont l'abonnement précédent
+  // aurait échoué côté serveur sans que rien ne le signale.
+  const pushSubscribeAttempted = useRef(false);
+  useEffect(() => {
+    if (status !== "authenticated" || pushSubscribeAttempted.current) return;
+    if (!isPushSupported() || Notification.permission === "denied") return;
+    pushSubscribeAttempted.current = true;
+    subscribeToPush().catch(() => {
+      // Best-effort : un échec ici (refus navigateur, réseau...) n'empêche
+      // jamais l'usage de l'app — l'utilisateur peut réessayer depuis
+      // Paramètres (voir PushNotificationsRow).
+    });
   }, [status]);
 
   const login = useCallback(async (dto: LoginInput) => {

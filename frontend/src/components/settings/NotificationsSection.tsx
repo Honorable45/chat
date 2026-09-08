@@ -4,9 +4,18 @@ import { useEffect, useState } from "react";
 import { Toggle } from "@/components/Toggle";
 import { api, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { isPushSupported, subscribeToPush } from "@/lib/push";
 import { saveButtonClassName } from "./shared";
 
-function Row({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
+function Row({
+  label,
+  description,
+  children,
+}: {
+  label: string;
+  description?: string;
+  children?: React.ReactNode;
+}) {
   return (
     <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-surface-raised px-4 py-3">
       <div>
@@ -18,30 +27,23 @@ function Row({ label, description, children }: { label: string; description?: st
   );
 }
 
-/** VAPID publique : convertie en tableau d'octets attendu par PushManager.subscribe (forme standard, voir MDN). */
-function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {
-  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
-  const rawData = window.atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
-  for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
-  return outputArray;
-}
-
-type PushState = "checking" | "unsupported" | "subscribed" | "unsubscribed";
+type PushState = "checking" | "unsupported" | "subscribed" | "denied" | "unsubscribed";
 
 /**
- * Interrupteur "Notifications push sur cet appareil" — indépendant du
- * réglage serveur ci-dessus : celui-ci coupe TOUTES les notifications
- * (in-app comprises), celui-là active seulement leur diffusion système
- * quand l'app/l'onglet n'est pas ouvert (voir public/sw.js). L'état affiché
- * relit toujours `pushManager.getSubscription()` — jamais un simple flag
- * local, qui pourrait mentir après une désinscription faite depuis les
- * réglages du navigateur plutôt que depuis ce bouton.
+ * État "Notifications push sur cet appareil" — indépendant du réglage
+ * serveur ci-dessus : celui-ci coupe TOUTES les notifications (in-app
+ * comprises), celui-là ne concerne que leur diffusion système quand l'app/
+ * l'onglet n'est pas ouvert (voir public/sw.js). Activées par défaut et non
+ * désactivables depuis l'app (voir auth-context.tsx, qui déclenche
+ * l'abonnement automatiquement à la connexion) : ceci n'affiche plus qu'un
+ * statut, avec un bouton "Activer" seulement pour rattraper un abonnement
+ * qui aurait échoué — jamais de bouton pour le couper. Un refus navigateur
+ * ("denied") ne peut être renversé que depuis les réglages du système/
+ * navigateur, jamais depuis l'app — affiché tel quel plutôt que proposer un
+ * bouton qui ne pourrait rien faire.
  */
 function PushNotificationsRow() {
   const [state, setState] = useState<PushState>("checking");
-  const [subscription, setSubscription] = useState<PushSubscription | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,16 +54,18 @@ function PushNotificationsRow() {
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
-      if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      if (!isPushSupported()) {
         setState("unsupported");
+        return;
+      }
+      if (Notification.permission === "denied") {
+        setState("denied");
         return;
       }
       navigator.serviceWorker.ready
         .then((registration) => registration.pushManager.getSubscription())
         .then((sub) => {
-          if (cancelled) return;
-          setSubscription(sub);
-          setState(sub ? "subscribed" : "unsubscribed");
+          if (!cancelled) setState(sub ? "subscribed" : "unsubscribed");
         })
         .catch(() => {
           if (!cancelled) setState("unsupported");
@@ -72,49 +76,21 @@ function PushNotificationsRow() {
     };
   }, []);
 
-  async function enable() {
+  async function activate() {
     setBusy(true);
     setError(null);
     try {
-      const permission = await Notification.requestPermission();
-      if (permission !== "granted") {
-        setError("Autorisation refusée par le navigateur.");
-        return;
-      }
-      const registration = await navigator.serviceWorker.ready;
-      const { publicKey } = await api.push.getPublicKey();
-      const sub = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(publicKey),
-      });
-      await api.push.subscribe(sub.toJSON() as PushSubscriptionJSON);
-      setSubscription(sub);
+      await subscribeToPush();
       setState("subscribed");
     } catch (err) {
       // Affiche toujours le message réel (y compris une DOMException du
       // navigateur, ex. "Registration failed - push service error" côté
       // pushManager.subscribe) plutôt qu'un message générique qui masquait
       // la vraie cause — nécessaire pour diagnostiquer un échec silencieux
-      // constaté en prod (bug réel : le bouton semblait s'activer sans
+      // constaté en prod (bug réel : l'abonnement semblait réussi sans
       // qu'aucun abonnement n'arrive jamais côté serveur).
       setError(err instanceof Error ? err.message : "Impossible d'activer les notifications push.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function disable() {
-    if (!subscription) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const endpoint = subscription.endpoint;
-      await subscription.unsubscribe();
-      await api.push.unsubscribe(endpoint);
-      setSubscription(null);
-      setState("unsubscribed");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Impossible de désactiver les notifications push.");
+      setState(Notification.permission === "denied" ? "denied" : "unsubscribed");
     } finally {
       setBusy(false);
     }
@@ -122,11 +98,26 @@ function PushNotificationsRow() {
 
   if (state === "unsupported") {
     return (
+      <Row label="Notifications push sur cet appareil" description="Non prises en charge par ce navigateur." />
+    );
+  }
+
+  if (state === "denied") {
+    return (
       <Row
         label="Notifications push sur cet appareil"
-        description="Non prises en charge par ce navigateur."
+        description="Refusées par le navigateur — réactivez-les dans les réglages de notifications de votre appareil pour ce site."
+      />
+    );
+  }
+
+  if (state === "subscribed") {
+    return (
+      <Row
+        label="Notifications push sur cet appareil"
+        description="Reçoit une notification système même quand l'onglet est fermé (nouveau message, mention, appel manqué...)."
       >
-        <Toggle checked={false} onChange={() => {}} disabled />
+        <span className="text-xs font-medium text-[var(--online)]">Activées ✓</span>
       </Row>
     );
   }
@@ -137,11 +128,13 @@ function PushNotificationsRow() {
         label="Notifications push sur cet appareil"
         description="Reçoit une notification système même quand l'onglet est fermé (nouveau message, mention, appel manqué...)."
       >
-        <Toggle
-          checked={state === "subscribed"}
-          onChange={() => void (state === "subscribed" ? disable() : enable())}
+        <button
+          onClick={() => void activate()}
           disabled={busy || state === "checking"}
-        />
+          className="rounded-full border border-border px-3 py-1.5 text-xs font-medium transition hover:bg-surface disabled:opacity-60"
+        >
+          {busy ? "..." : "Activer"}
+        </button>
       </Row>
       {error && <p className="text-sm text-danger">{error}</p>}
     </div>
