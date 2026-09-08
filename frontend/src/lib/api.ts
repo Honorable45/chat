@@ -39,7 +39,11 @@ export interface CallHistoryEntry {
   otherUser: { id: string; firstName: string; lastName: string; avatarUrl: string | null };
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/api";
+// Exporté (voir auth-context.tsx) : transmis au service worker par postMessage
+// pour que son action "Refuser" (notification push d'appel entrant) sache
+// vers quel backend faire son fetch — un fichier statique comme public/sw.js
+// n'a accès à aucune variable d'environnement Next.js.
+export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/api";
 
 /**
  * Une URL de média renvoyée par le backend (avatar, pièce jointe, média de
@@ -445,6 +449,8 @@ export const api = {
     iceServers: () => request<RTCIceServer[]>("/calls/ice-servers"),
     // Hydratation à la demande d'un message CALL chargé depuis l'historique — jamais fourni par GET /conversations/:id/messages.
     getMessage: (messageId: string) => request<CallMessagePayload>(`/calls/message/${messageId}`),
+    // Reprise d'un appel entrant après ouverture de l'app depuis l'action "Répondre" d'une notification push (voir use-call.ts resumeIncoming).
+    getById: (callId: string) => request<CallMessagePayload>(`/calls/${callId}`),
     history: (cursor?: string) =>
       request<Page<CallHistoryEntry>>(`/calls${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
   },

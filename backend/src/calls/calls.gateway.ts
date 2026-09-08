@@ -289,6 +289,23 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       .emit(event, { callId: body.callId, data: body.data });
   }
 
+  /**
+   * Notifie l'appelant (et les autres appareils de l'appelé) qu'un appel a
+   * été refusé, sans passer par un socket de l'appelé — voir
+   * CallsController.quickReject : le refus vient du bouton "Refuser" d'une
+   * notification push système, via une requête HTTP directe du service
+   * worker, potentiellement sans qu'aucun onglet/appareil de l'appelé ne
+   * soit connecté à ce namespace. Même diffusion que handleReject, mais
+   * `this.server.to(...)` (jamais `client.to(...)`, il n'y a ici aucun
+   * socket émetteur à exclure).
+   */
+  notifyRejected(callMessage: CallMessageDto): void {
+    this.server.to(this.userRoom(callMessage.call.callerId)).emit('call:rejected', callMessage);
+    this.server
+      .to(this.userRoom(callMessage.call.calleeId))
+      .emit('call:resolved-elsewhere', callMessage);
+  }
+
   private toAckError(error: unknown): { ok: false; error: string } {
     if (error instanceof HttpException) {
       const response = error.getResponse();

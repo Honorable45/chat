@@ -576,6 +576,28 @@ function ChatPageInner() {
     }
   }, [call.phase]);
 
+  // Reprise d'un appel entrant après ouverture de l'app depuis l'action
+  // "Répondre" d'une notification push système (voir sw.js,
+  // useCall.resumeIncoming) — le socket "/calls" vient tout juste de se
+  // connecter ci-dessus, donc aucun événement `call:incoming` en temps réel
+  // n'a pu être reçu pour un appel initié pendant que l'app était fermée.
+  useEffect(() => {
+    const callId = searchParams.get("incomingCall");
+    if (!callId || call.phase !== "idle") return;
+    queueMicrotask(() => {
+      // Ne retire QUE `incomingCall` de l'URL (jamais `/chat` en dur) : le
+      // lien de la notification porte aussi `?c=<conversationId>` (voir
+      // PushProvider.sendCallInvite), que l'effet ci-dessus doit encore
+      // pouvoir traiter une fois la liste de conversations chargée.
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete("incomingCall");
+      const query = params.toString();
+      router.replace(query ? `/chat?${query}` : "/chat");
+      void call.resumeIncoming(callId);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `call` (retourné par useCall) est un nouvel objet à chaque rendu ; dépendre de sa seule référence stable (call.resumeIncoming, via useCallback) plutôt que de l'objet entier évite une boucle de ré-exécution.
+  }, [call.phase, call.resumeIncoming, searchParams, router]);
+
   function startCall(kind: "AUDIO" | "VIDEO") {
     if (!selected?.otherParticipant) return;
     void call.start(selected.id, selected.otherParticipant.id, kind);

@@ -430,6 +430,38 @@ export function useCall(enabled: boolean, onCallMessage: (message: CallMessagePa
     if (res.callMessage) onCallMessageRef.current(res.callMessage);
   }, [cleanupMedia, reset, update]);
 
+  /**
+   * Reprend un appel entrant après ouverture de l'app depuis l'action
+   * "Répondre" d'une notification push système (voir sw.js/chat/page.tsx,
+   * `?incomingCall=<callId>`) — aucun événement `call:incoming` n'a été reçu
+   * en temps réel puisque le socket "/calls" n'existait pas encore à
+   * l'invitation (app totalement fermée). Simule le même effet que ce
+   * handler socket, à partir de l'état authoritative renvoyé par le serveur,
+   * sans rien réémettre : `accept()`/`reject()` ensuite suivent leur
+   * chemin normal.
+   */
+  const resumeIncoming = useCallback(
+    async (callId: string) => {
+      if (stateRef.current.phase !== "idle") return;
+      try {
+        const message = await api.calls.getById(callId);
+        if (message.call.status !== "RINGING") return;
+        update({
+          phase: "incoming",
+          conversationId: message.conversationId,
+          callId: message.call.id,
+          otherUserId: message.call.callerId,
+          kind: message.call.type,
+          error: null,
+        });
+        onCallMessageRef.current(message);
+      } catch {
+        // Appel déjà résolu (accepté/refusé/expiré) avant l'ouverture de l'app — rien à afficher.
+      }
+    },
+    [update],
+  );
+
   const reject = useCallback(async () => {
     const socket = socketRef.current;
     const { callId } = stateRef.current;
@@ -520,6 +552,7 @@ export function useCall(enabled: boolean, onCallMessage: (message: CallMessagePa
     localVideoRef,
     start,
     accept,
+    resumeIncoming,
     reject,
     hangUp,
     toggleMute,

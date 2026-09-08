@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, type LoginInput, type RegisterInput } from "./api";
+import { api, API_URL, ApiError, type LoginInput, type RegisterInput } from "./api";
 import { clearTokens, getAccessToken, setTokens } from "./token-store";
 import type { Me } from "./types";
 
@@ -80,10 +80,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (status !== "authenticated" || swRegistered.current) return;
     if (!("serviceWorker" in navigator)) return;
     swRegistered.current = true;
-    navigator.serviceWorker.register("/sw.js").catch(() => {
-      // Silencieux : l'onglet Notifications des Paramètres retombe sur
-      // l'état "non supporté" s'il ne trouve pas de registration active.
-    });
+    navigator.serviceWorker
+      .register("/sw.js")
+      .then(async () => {
+        // Un fichier statique comme sw.js n'a accès à aucune variable
+        // d'environnement Next.js — transmis explicitement ici, et persisté
+        // côté SW (IndexedDB, voir sw.js) pour survivre à un redémarrage du
+        // processus worker sans page ouverte (nécessaire pour l'action
+        // "Refuser" d'une notification push d'appel entrant, voir
+        // PushProvider.sendCallInvite/CallsController.quickReject).
+        const registration = await navigator.serviceWorker.ready;
+        registration.active?.postMessage({ type: "config", apiUrl: API_URL });
+      })
+      .catch(() => {
+        // Silencieux : l'onglet Notifications des Paramètres retombe sur
+        // l'état "non supporté" s'il ne trouve pas de registration active.
+      });
   }, [status]);
 
   const login = useCallback(async (dto: LoginInput) => {

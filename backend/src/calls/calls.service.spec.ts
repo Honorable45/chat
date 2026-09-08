@@ -1,7 +1,10 @@
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import type { ConfigService } from '@nestjs/config';
+import type { JwtService } from '@nestjs/jwt';
 import type { Call } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { PushProvider } from '../push/push.provider';
 import { CallsService } from './calls.service';
 
 function buildCall(overrides: Partial<Call> = {}): Call {
@@ -19,6 +22,12 @@ function buildCall(overrides: Partial<Call> = {}): Call {
   };
 }
 
+/** `invite()` déclenche le push d'appel en fire-and-forget (`void`, jamais
+ * attendu) — laisse la microtask queue se vider avant d'observer ses effets. */
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 const MESSAGE_STUB = {
   conversationId: 'conv-1',
   senderId: 'alice',
@@ -34,6 +43,9 @@ describe('CallsService', () => {
     conversationMember: { findUnique: jest.Mock };
   };
   let notifications: { create: jest.Mock };
+  let jwt: { signAsync: jest.Mock; verifyAsync: jest.Mock };
+  let config: { getOrThrow: jest.Mock };
+  let push: { sendCallInvite: jest.Mock };
   let service: CallsService;
 
   beforeEach(() => {
@@ -44,9 +56,18 @@ describe('CallsService', () => {
       conversationMember: { findUnique: jest.fn() },
     };
     notifications = { create: jest.fn().mockResolvedValue(null) };
+    jwt = {
+      signAsync: jest.fn().mockResolvedValue('reject-token'),
+      verifyAsync: jest.fn(),
+    };
+    config = { getOrThrow: jest.fn().mockReturnValue('call-action-secret') };
+    push = { sendCallInvite: jest.fn().mockResolvedValue(undefined) };
     service = new CallsService(
       prisma as unknown as PrismaService,
       notifications as unknown as NotificationsService,
+      jwt as unknown as JwtService,
+      config as unknown as ConfigService,
+      push as unknown as PushProvider,
     );
   });
 
@@ -139,6 +160,31 @@ describe('CallsService', () => {
         expect(result.call.status).toBe('RINGING');
         expect(result.senderId).toBe('alice');
       }
+    });
+
+    it('réveille l’appelé hors de l’app via un push dédié, avec un jeton de refus signé séparément', async () => {
+      prisma.conversation.findUnique.mockResolvedValue(conversation);
+      prisma.call.findFirst.mockResolvedValue(null);
+      prisma.message.create.mockResolvedValue({
+        id: 'message-1',
+        sentAt: MESSAGE_STUB.sentAt,
+        createdAt: MESSAGE_STUB.createdAt,
+        call: buildCall(),
+      });
+
+      await service.invite('alice', 'conv-1', 'bob');
+      await flushMicrotasks();
+
+      expect(jwt.signAsync).toHaveBeenCalledWith(
+        { sub: 'bob', callId: 'call-1', purpose: 'call-reject' },
+        { secret: 'call-action-secret', expiresIn: '10m' },
+      );
+      expect(push.sendCallInvite).toHaveBeenCalledWith('bob', {
+        callId: 'call-1',
+        conversationId: 'conv-1',
+        kind: 'AUDIO',
+        rejectToken: 'reject-token',
+      });
     });
 
     it('démarre un appel vidéo quand demandé explicitement (par défaut : AUDIO)', async () => {
@@ -339,6 +385,58 @@ describe('CallsService', () => {
           otherUser: expect.objectContaining({ id: 'alice' }),
         }),
       );
+    });
+  });
+
+  describe('getById', () => {
+    it('renvoie l’appel pour l’appelant ou l’appelé', async () => {
+      prisma.call.findUnique.mockResolvedValue({ ...buildCall(), message: MESSAGE_STUB });
+
+      const asCallee = await service.getById('bob', 'call-1');
+      const asCaller = await service.getById('alice', 'call-1');
+
+      expect(asCallee.call.id).toBe('call-1');
+      expect(asCaller.call.id).toBe('call-1');
+    });
+
+    it("404 si l'appel est introuvable ou ne concerne pas l'appelant (jamais 403)", async () => {
+      prisma.call.findUnique.mockResolvedValue(null);
+      await expect(service.getById('alice', 'call-1')).rejects.toBeInstanceOf(NotFoundException);
+
+      prisma.call.findUnique.mockResolvedValue({ ...buildCall(), message: MESSAGE_STUB });
+      await expect(service.getById('mallory', 'call-1')).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('quickReject', () => {
+    it('refuse l’appel désigné par un jeton valide au bon usage (purpose "call-reject")', async () => {
+      jwt.verifyAsync.mockResolvedValue({ sub: 'bob', callId: 'call-1', purpose: 'call-reject' });
+      prisma.call.findUnique.mockResolvedValue(buildCall());
+      prisma.call.update.mockResolvedValue({
+        ...buildCall({ status: 'DECLINED', endedAt: new Date() }),
+        message: MESSAGE_STUB,
+      });
+
+      const result = await service.quickReject('a-token');
+
+      expect(jwt.verifyAsync).toHaveBeenCalledWith('a-token', { secret: 'call-action-secret' });
+      expect(prisma.call.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'call-1' },
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.any(Date) est typé `any`, assert de test uniquement.
+          data: { status: 'DECLINED', endedAt: expect.any(Date) },
+        }),
+      );
+      expect(result.call.status).toBe('DECLINED');
+    });
+
+    it('404 si le jeton est invalide, expiré, ou détourné pour un autre usage', async () => {
+      jwt.verifyAsync.mockRejectedValueOnce(new Error('jwt expired'));
+      await expect(service.quickReject('expired')).rejects.toBeInstanceOf(NotFoundException);
+
+      jwt.verifyAsync.mockResolvedValueOnce({ sub: 'bob', callId: 'call-1', purpose: 'other' });
+      await expect(service.quickReject('wrong-purpose')).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.call.findUnique).not.toHaveBeenCalled();
     });
   });
 

@@ -6,11 +6,13 @@ import { PushProvider } from '../push/push.provider';
 import { EventsGateway } from '../websocket/events.gateway';
 import { buildPushText, buildPushUrl } from './push-text.util';
 
-// INCOMING_CALL a déjà sa propre sonnerie temps réel (voir CallsGateway,
-// qui suppose une connexion WebSocket active) — un push impliquerait des
-// actions "Accepter/Refuser" dans la notification système et une UX de
-// réveil complète, hors périmètre : jamais poussé en plus de la ligne
-// Notification/l'événement socket déjà émis ci-dessous pour ce type.
+// INCOMING_CALL a sa propre sonnerie temps réel (voir CallsGateway, qui
+// suppose une connexion WebSocket active) ET, désormais, son propre push
+// système avec actions "Répondre"/"Refuser" (voir CallsService.invite →
+// PushProvider.sendCallInvite) — mais jamais via CE chemin générique
+// (title/body/url) : sa forme (jeton de refus, requireInteraction, tag)
+// diffère trop pour partager PushMessage, donc explicitement exclu ici pour
+// ne jamais faire doublon avec l'appel dédié fait côté CallsService.
 const PUSH_EXCLUDED_TYPES: ReadonlySet<NotificationType> = new Set(['INCOMING_CALL']);
 
 const DEFAULT_PAGE_SIZE = 30;

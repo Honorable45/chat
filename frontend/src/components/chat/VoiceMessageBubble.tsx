@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MoreVerticalIcon, PauseIcon, PlayIcon, ShareIcon, TrashIcon } from "@/components/icons";
+import { LanguagesIcon, MoreVerticalIcon, PauseIcon, PlayIcon, TrashIcon } from "@/components/icons";
 import { api } from "@/lib/api";
 import { formatDuration } from "@/lib/format";
 import { getAccessToken } from "@/lib/token-store";
@@ -90,8 +90,23 @@ export function VoiceMessageBubble({
   myLanguageCode?: string | null;
   onDelete?: (messageId: string) => void;
 }) {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const objectUrlRef = useRef<string | null>(null);
+  // Deux pistes indépendantes (jamais une seule réutilisée) : garder chacune
+  // chargée une fois récupérée évite de retélécharger l'audio à chaque
+  // aller-retour "original ↔ traduit" déclenché depuis le menu ci-dessous.
+  const originalAudioRef = useRef<HTMLAudioElement | null>(null);
+  const originalUrlRef = useRef<string | null>(null);
+  const translatedAudioRef = useRef<HTMLAudioElement | null>(null);
+  const translatedUrlRef = useRef<string | null>(null);
+  const [audioSource, setAudioSource] = useState<"original" | "translated">("original");
+  // Lu depuis les gestionnaires d'événements audio (voir loadSource) pour
+  // ignorer un événement d'une piste qu'on vient de quitter — sans ça, un
+  // "timeupdate" en retard de la piste traduite pourrait écraser la barre
+  // de progression de l'original juste rebasculé dessus.
+  const audioSourceRef = useRef(audioSource);
+  useEffect(() => {
+    audioSourceRef.current = audioSource;
+  }, [audioSource]);
+
   const [state, setState] = useState<"idle" | "loading" | "playing" | "paused" | "error">("idle");
   const [progress, setProgress] = useState(0); // 0..1
   // Initialisée depuis voice.durationSeconds (mesurée par l'enregistreur au
@@ -99,11 +114,13 @@ export function VoiceMessageBubble({
   // `null` : `audio.duration` d'un blob WebM issu de MediaRecorder renvoie
   // très souvent `Infinity` sur Chrome au moment de "loadedmetadata" (durée
   // absente du conteneur), ce qui affichait "0:00" et bloquait la
-  // progression de la barre de lecture — bug réel constaté en prod.
+  // progression de la barre de lecture — bug réel constaté en prod. L'audio
+  // traduit (synthèse vocale, jamais un enregistrement MediaRecorder) n'a
+  // pas ce problème, mais sa durée n'est connue d'aucune autre source :
+  // `null` le temps que "loadedmetadata" la fournisse (voir toggleSource).
   const [duration, setDuration] = useState<number | null>(voice?.durationSeconds ?? null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [showTranslation, setShowTranslation] = useState(false);
-  const [sharing, setSharing] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   // Valeur dérivée pure de `messageId` : useMemo (pas useRef, dont la lecture
   // pendant le rendu casse sous le compilateur React — react-hooks/refs).
@@ -111,8 +128,12 @@ export function VoiceMessageBubble({
 
   useEffect(() => {
     return () => {
-      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
-      audioRef.current?.pause();
+      if (originalUrlRef.current) URL.revokeObjectURL(originalUrlRef.current);
+      if (translatedUrlRef.current) URL.revokeObjectURL(translatedUrlRef.current);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- ces refs ne pointent jamais un nœud rendu par React (juste un `new Audio(...)` créé à la volée, voir loadSource) : lire `.current` au démontage, plutôt qu'au moment où cet effet s'est déclenché, est justement le comportement voulu.
+      originalAudioRef.current?.pause();
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- même raison que ci-dessus.
+      translatedAudioRef.current?.pause();
     };
   }, []);
 
@@ -125,26 +146,40 @@ export function VoiceMessageBubble({
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, [menuOpen]);
 
-  async function ensureLoaded() {
+  /** Charge (une seule fois par piste, voir les refs dédiées) l'audio original ou traduit, selon `source`. */
+  async function loadSource(source: "original" | "translated"): Promise<HTMLAudioElement> {
+    const audioRef = source === "translated" ? translatedAudioRef : originalAudioRef;
     if (audioRef.current) return audioRef.current;
+    if (source === "translated" && !relevantTranslation?.audioUrl) {
+      throw new Error("Audio traduit indisponible.");
+    }
 
     const token = getAccessToken();
-    const res = await fetch(api.voice.audioUrl(messageId), {
+    const requestUrl =
+      source === "translated"
+        ? api.voice.translatedAudioUrl(messageId, relevantTranslation!.targetLanguage.code)
+        : api.voice.audioUrl(messageId);
+    const res = await fetch(requestUrl, {
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     });
     if (!res.ok) throw new Error("Audio introuvable.");
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
-    objectUrlRef.current = url;
+    if (source === "translated") translatedUrlRef.current = url;
+    else originalUrlRef.current = url;
 
     const audio = new Audio(url);
     // Ne remplace jamais une durée déjà connue (voir voice.durationSeconds
     // ci-dessus) par une valeur non finie — seulement si le navigateur
-    // fournit une vraie mesure exploitable.
+    // fournit une vraie mesure exploitable. Ignore l'événement si la piste
+    // active a changé entretemps (voir audioSourceRef) : une piste chargée
+    // en arrière-plan ne doit jamais mettre à jour l'affichage de l'autre.
     audio.addEventListener("loadedmetadata", () => {
+      if (audioSourceRef.current !== source) return;
       if (Number.isFinite(audio.duration) && audio.duration > 0) setDuration(audio.duration);
     });
     audio.addEventListener("timeupdate", () => {
+      if (audioSourceRef.current !== source) return;
       // `audio.duration` (Infinity sur un WebM MediaRecorder tant que la
       // lecture n'a pas assez avancé) ne doit jamais servir de diviseur ici
       // — la durée connue par ailleurs (voice.durationSeconds) reste le
@@ -153,6 +188,7 @@ export function VoiceMessageBubble({
       if (total) setProgress(audio.currentTime / total);
     });
     audio.addEventListener("ended", () => {
+      if (audioSourceRef.current !== source) return;
       setState("paused");
       setProgress(0);
     });
@@ -162,13 +198,13 @@ export function VoiceMessageBubble({
 
   async function toggle() {
     if (state === "playing") {
-      audioRef.current?.pause();
+      (audioSource === "translated" ? translatedAudioRef : originalAudioRef).current?.pause();
       setState("paused");
       return;
     }
     try {
       setState("loading");
-      const audio = await ensureLoaded();
+      const audio = await loadSource(audioSource);
       await audio.play();
       setState("playing");
     } catch {
@@ -176,26 +212,31 @@ export function VoiceMessageBubble({
     }
   }
 
-  async function share() {
+  /**
+   * Bascule la lecture entre l'audio original et sa traduction (voir
+   * relevantTranslation) — remplace l'ancien bouton "Partager" du menu :
+   * lance tout de suite la lecture de la piste choisie, depuis le début (un
+   * second passage par le menu revient à l'original, et ainsi de suite).
+   */
+  async function toggleSource() {
     setMenuOpen(false);
-    setSharing(true);
+    const current = audioSource === "translated" ? translatedAudioRef : originalAudioRef;
+    current.current?.pause();
+
+    const next = audioSource === "translated" ? "original" : "translated";
+    setAudioSource(next);
+    audioSourceRef.current = next;
+    setProgress(0);
+    setDuration(next === "original" ? (voice?.durationSeconds ?? null) : null);
+
     try {
-      const blob = await fetchAsBlob(api.voice.audioUrl(messageId));
-      if (!blob) return;
-      const extension = blob.type.split("/")[1]?.split(";")[0] ?? "webm";
-      const file = new File([blob], `message-vocal.${extension}`, { type: blob.type });
-      if (navigator.canShare?.({ files: [file] })) {
-        await navigator.share({ files: [file], title: "Message vocal" });
-      } else if (navigator.share) {
-        // Certains navigateurs partagent sans fichier (titre/texte seulement) —
-        // mieux que rien plutôt que de ne rien proposer du tout.
-        await navigator.share({ title: "Message vocal Glotta" });
-      }
+      setState("loading");
+      const audio = await loadSource(next);
+      audio.currentTime = 0;
+      await audio.play();
+      setState("playing");
     } catch {
-      // L'utilisateur a annulé le partage, ou l'API n'est pas disponible —
-      // jamais bloquant, aucun message d'erreur nécessaire.
-    } finally {
-      setSharing(false);
+      setState("error");
     }
   }
 
@@ -210,6 +251,9 @@ export function VoiceMessageBubble({
       ? voice?.translations.find((t) => t.targetLanguage.code === myLanguageCode)
       : undefined;
   const hasTranslationContent = Boolean(voice?.transcript || relevantTranslation);
+  const hasTranslatedAudio = Boolean(
+    relevantTranslation?.status === "COMPLETED" && relevantTranslation.audioUrl,
+  );
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -277,12 +321,12 @@ export function VoiceMessageBubble({
                 {showTranslation ? "Masquer la traduction" : "Afficher la traduction"}
               </button>
               <button
-                onClick={() => void share()}
-                disabled={sharing}
-                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface disabled:opacity-60"
+                onClick={() => void toggleSource()}
+                disabled={!hasTranslatedAudio && audioSource === "original"}
+                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <ShareIcon size={15} />
-                Partager
+                <LanguagesIcon size={15} />
+                {audioSource === "translated" ? "Écouter l'original" : "Écouter la traduction"}
               </button>
               {own && onDelete && (
                 <button

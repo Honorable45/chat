@@ -4,12 +4,26 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import { Call, CallStatus, CallType, Prisma } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { PushProvider } from '../push/push.provider';
 import { resolveAvatarUrl } from '../profiles/avatar.util';
 
 const CALL_HISTORY_PAGE_SIZE = 30;
+
+/** Purpose claim du jeton d'action d'appel (voir mintQuickRejectToken/quickReject) — jamais confondu avec un access/refresh token classique (secret dédié, voir CALL_ACTION_JWT_SECRET). */
+const CALL_REJECT_TOKEN_PURPOSE = 'call-reject';
+/** Généreux (bien plus qu'une sonnerie réelle) : l'utilisateur peut ne remarquer/toucher la notification système que plusieurs minutes après — reject() revalide de toute façon le statut RINGING côté serveur, un jeton encore valide sur un appel déjà résolu ne fait donc jamais de mal. */
+const CALL_REJECT_TOKEN_TTL = '10m';
+
+interface CallRejectTokenPayload {
+  sub: string;
+  callId: string;
+  purpose: string;
+}
 
 const CALL_HISTORY_PARTICIPANT_SELECT = {
   id: true,
@@ -107,6 +121,9 @@ export class CallsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly jwt: JwtService,
+    private readonly config: ConfigService,
+    private readonly push: PushProvider,
   ) {}
 
   /**
@@ -175,6 +192,14 @@ export class CallsService {
       callId: call.id,
       callerId,
     });
+
+    // Fire-and-forget, comme les autres envois push best-effort du projet
+    // (voir NotificationsService.create) : réveille l'appelé même si son
+    // application est totalement fermée (aucun socket "/calls" connecté,
+    // donc l'événement 'call:incoming' émis par CallsGateway ne va nulle
+    // part) — sans ce push, un appel vers quelqu'un hors de l'app ne
+    // sonnerait jamais chez lui.
+    void this.sendIncomingCallPush(calleeId, call.id, conversationId, type);
 
     return this.toDto(
       message.id,
@@ -341,6 +366,56 @@ export class CallsService {
     };
   }
 
+  /**
+   * Reprise d'un appel entrant après ouverture de l'app depuis l'action
+   * "Répondre" d'une notification push système (voir sw.js / chat/page.tsx,
+   * `?incomingCall=<callId>`) — le callee n'a reçu aucun événement
+   * `call:incoming` en temps réel puisque son socket "/calls" n'existait pas
+   * encore à l'invitation. 404-jamais-403 (section 23) : un appel qui ne le
+   * concerne pas est traité comme introuvable, jamais distingué d'un appel
+   * inexistant.
+   */
+  async getById(userId: string, callId: string): Promise<CallMessageDto> {
+    const call = await this.prisma.call.findUnique({
+      where: { id: callId },
+      include: {
+        message: {
+          select: { conversationId: true, senderId: true, sentAt: true, createdAt: true },
+        },
+      },
+    });
+    if (!call || (call.callerId !== userId && call.calleeId !== userId)) {
+      throw new NotFoundException('Appel introuvable.');
+    }
+    return this.fromUpdated(call);
+  }
+
+  /**
+   * Refuse un appel à partir du jeton d'action embarqué dans la notification
+   * push (bouton "Refuser") — jamais via JwtAuthGuard (voir CallsController) :
+   * appelé directement par le service worker, à un moment où l'utilisateur
+   * n'a peut-être aucune page ouverte donc aucun accessToken de session
+   * disponible (celui-ci ne vit qu'en localStorage, inaccessible depuis un
+   * service worker). Le jeton lui-même porte l'identité et le périmètre
+   * (userId + callId précis), signé avec un secret dédié distinct de
+   * JWT_ACCESS_SECRET pour qu'il ne puisse jamais être rejoué comme un
+   * access token classique sur une autre route.
+   */
+  async quickReject(token: string): Promise<CallMessageDto> {
+    let payload: CallRejectTokenPayload;
+    try {
+      payload = await this.jwt.verifyAsync<CallRejectTokenPayload>(token, {
+        secret: this.config.getOrThrow<string>('CALL_ACTION_JWT_SECRET'),
+      });
+    } catch {
+      throw new NotFoundException('Jeton invalide ou expiré.');
+    }
+    if (payload.purpose !== CALL_REJECT_TOKEN_PURPOSE) {
+      throw new NotFoundException('Jeton invalide ou expiré.');
+    }
+    return this.reject(payload.sub, payload.callId);
+  }
+
   async getByMessageId(userId: string, messageId: string): Promise<CallMessageDto> {
     const call = await this.prisma.call.findUnique({
       where: { messageId },
@@ -385,6 +460,22 @@ export class CallsService {
       });
     }
     return servers;
+  }
+
+  private async sendIncomingCallPush(
+    calleeId: string,
+    callId: string,
+    conversationId: string,
+    kind: CallType,
+  ): Promise<void> {
+    const rejectToken = await this.jwt.signAsync(
+      { sub: calleeId, callId, purpose: CALL_REJECT_TOKEN_PURPOSE },
+      {
+        secret: this.config.getOrThrow<string>('CALL_ACTION_JWT_SECRET'),
+        expiresIn: CALL_REJECT_TOKEN_TTL,
+      },
+    );
+    await this.push.sendCallInvite(calleeId, { callId, conversationId, kind, rejectToken });
   }
 
   private async notifyMissed(call: CallWithMessage): Promise<void> {

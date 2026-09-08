@@ -104,6 +104,8 @@ Reprenez `backend/.env.example` et changez impérativement :
 | `DATABASE_URL` | Fournie par le Postgres managé |
 | `REDIS_URL` | Fournie par le Redis managé |
 | `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | Deux secrets forts générés (`openssl rand -hex 32`) — **jamais** les valeurs `change-me-*` de l'exemple |
+| `CALL_ACTION_JWT_SECRET` | Un troisième secret fort (`openssl rand -hex 32`), **distinct** des deux ci-dessus — jeton du bouton "Refuser" d'une notification push d'appel entrant (voir `CallsService.quickReject`) |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | Générées une fois avec `npx web-push generate-vapid-keys` (`VAPID_SUBJECT` = `mailto:<votre email>`) — **sans ces 3 variables, aucune notification push (message, appel manqué, appel entrant...) n'est envoyée**, même si tout le reste fonctionne : `PushProvider` retombe silencieusement sur "rien n'est envoyé" plutôt que d'échouer, donc l'oubli ne se voit dans aucun log d'erreur |
 | `CORS_ORIGIN` | Domaines Vercel de `frontend/` **et** `admin/`, séparés par une virgule (ex. `https://glotta.vercel.app,https://admin-glotta.vercel.app`) |
 | `STORAGE_LOCAL_PATH` | Chemin du volume persistant monté (messages vocaux uniquement, voir ci-dessus) |
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Identifiants du Dashboard Cloudinary — active le stockage de tous les médias (images, vidéos, avatars, photos de groupe, messages vocaux, audio traduit) |
@@ -171,7 +173,8 @@ modifie que `isActive`, jamais `role`, par design).
 
 ## Checklist avant mise en production
 
-- [ ] `JWT_ACCESS_SECRET`/`JWT_REFRESH_SECRET` régénérés (jamais les valeurs d'exemple)
+- [ ] `JWT_ACCESS_SECRET`/`JWT_REFRESH_SECRET`/`CALL_ACTION_JWT_SECRET` régénérés (jamais les valeurs d'exemple, jamais la même valeur pour les trois)
+- [ ] `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/`VAPID_SUBJECT` renseignés (sans quoi aucune notification push n'est envoyée, y compris les appels entrants hors de l'app)
 - [ ] `CLOUDINARY_CLOUD_NAME`/`CLOUDINARY_API_KEY`/`CLOUDINARY_API_SECRET` renseignés (images/vidéos/avatars/vocaux)
 - [ ] Volume persistant monté pour `STORAGE_LOCAL_PATH` (messages vocaux uniquement), ou driver S3 implémenté
 - [ ] `CORS_ORIGIN` inclut les deux domaines Vercel (frontend + admin)
