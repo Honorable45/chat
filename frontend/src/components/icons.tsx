@@ -303,6 +303,10 @@ export const RefreshIcon = (p: IconProps) =>
     p,
   );
 
+/** Flèche courbe de retour — "Répondre à ce message" (glisser ou bouton, voir SwipeToReply/MessageBubble). */
+export const ReplyIcon = (p: IconProps) =>
+  base(<path d="M9 6 3 12l6 6M3 12h11a6 6 0 0 1 6 6v1" />, p);
+
 export const AtSignIcon = (p: IconProps) =>
   base(
     <>

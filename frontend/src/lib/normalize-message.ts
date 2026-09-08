@@ -26,6 +26,10 @@ export function normalizeIncomingMessage(raw: unknown): Message | null {
       systemAction: null,
       systemTargetUserId: null,
       replyToId: (r.replyToId as string | null) ?? null,
+      // Le DTO vocal n'inclut pas de résumé du message cité (voir
+      // VoiceService côté backend) — un vocal envoyé en réponse n'affiche
+      // donc pas d'aperçu de citation, limite mineure acceptée ici.
+      replyTo: null,
       editedAt: null,
       deletedAt: (r.deletedAt as string | null) ?? null,
       sentAt: String(r.sentAt),

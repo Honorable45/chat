@@ -91,7 +91,7 @@ export const MESSAGE_INCLUDE = {
   // dépendre de la page actuellement chargée (le message cité peut être
   // bien plus ancien). Jamais le message cité en entier (pas ses propres
   // pièces jointes/réactions) : juste de quoi construire un résumé compact.
-  replyTo: { select: { id: true, senderId: true, type: true, text: true } },
+  replyTo: { select: { id: true, senderId: true, type: true, text: true, deletedAt: true } },
 } satisfies Prisma.MessageInclude;
 
 type MessageAttachment = {
@@ -112,6 +112,13 @@ type MessageWithReads = Message & {
   reactions?: { userId: string; emoji: string }[];
   mentions?: { userId: string }[];
   attachments?: MessageAttachment[];
+  replyTo?: {
+    id: string;
+    senderId: string;
+    type: Message['type'];
+    text: string | null;
+    deletedAt: Date | null;
+  } | null;
 };
 
 export function toMessageDto(message: MessageWithReads, cloudinary: CloudinaryProvider) {
@@ -127,6 +134,19 @@ export function toMessageDto(message: MessageWithReads, cloudinary: CloudinaryPr
     systemAction: message.systemAction,
     systemTargetUserId: message.systemTargetUserId,
     replyToId: message.replyToId,
+    // Résumé compact du message cité, jamais absent tant que replyToId
+    // l'est (le message cité peut avoir été supprimé — `replyTo` reste
+    // alors défini côté relation Prisma, `deletedAt` sur ce message
+    // original indique au frontend d'afficher "Message supprimé").
+    replyTo: message.replyTo
+      ? {
+          id: message.replyTo.id,
+          senderId: message.replyTo.senderId,
+          type: message.replyTo.type,
+          text: message.replyTo.text,
+          deletedAt: message.replyTo.deletedAt,
+        }
+      : null,
     editedAt: message.editedAt,
     deletedAt: message.deletedAt,
     sentAt: message.sentAt,

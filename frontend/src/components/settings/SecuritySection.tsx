@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { inputClassName } from "@/components/auth/AuthShell";
+import { BouncingDots } from "@/components/BouncingDots";
 import { api, ApiError } from "@/lib/api";
 import { shortRelativeTime } from "@/lib/format";
 import type { SessionSummary } from "@/lib/types";
@@ -129,7 +130,11 @@ export function SecuritySection() {
         {error && <p className="mb-2 text-sm text-danger">{error}</p>}
 
         <div className="flex flex-col gap-2">
-          {sessions === null && <p className="text-sm text-muted">Chargement...</p>}
+          {sessions === null && (
+            <div className="flex justify-center py-4">
+              <BouncingDots />
+            </div>
+          )}
           {sessions?.map((s) => (
             <div
               key={s.id}

@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Avatar } from "@/components/Avatar";
+import { BouncingDots } from "@/components/BouncingDots";
 import { SearchIcon, UsersIcon } from "@/components/icons";
 import { displayName, shortRelativeTime } from "@/lib/format";
 import type { Conversation, ConversationLastMessage } from "@/lib/types";
@@ -193,7 +194,9 @@ export function ConversationList({
 
       <div className="min-h-0 flex-1 overflow-y-auto glotta-scroll-hidden px-2 pb-4">
         {loading && (
-          <p className="px-3 py-6 text-center text-sm text-muted">Chargement des conversations...</p>
+          <div className="flex justify-center py-6">
+            <BouncingDots />
+          </div>
         )}
         {!loading && filtered.length === 0 && (
           <p className="px-3 py-6 text-center text-sm text-muted">

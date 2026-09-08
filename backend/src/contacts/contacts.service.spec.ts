@@ -383,7 +383,10 @@ describe('ContactsService', () => {
       ]);
       users.getPublicProfile.mockResolvedValue(buildPublicProfile({ id: 'bob' }));
 
-      const result = await service.shareContact('alice', { conversationId: 'conv-1', userId: 'bob' });
+      const result = await service.shareContact('alice', {
+        conversationId: 'conv-1',
+        userId: 'bob',
+      });
 
       expect(result).toEqual(
         expect.objectContaining({ reactions: [], mentions: [], mentionsEveryone: false }),

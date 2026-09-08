@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Avatar } from "@/components/Avatar";
 import { AuthShell, primaryButtonClassName } from "@/components/auth/AuthShell";
+import { BouncingDots } from "@/components/BouncingDots";
 import { UsersIcon } from "@/components/icons";
 import { api, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
@@ -61,7 +62,11 @@ export default function GroupInvitePage() {
       }
     >
       <div className="flex flex-col items-center gap-4 text-center">
-        {loading && <p className="text-sm text-muted">Chargement...</p>}
+        {loading && (
+          <div className="flex justify-center py-4">
+            <BouncingDots />
+          </div>
+        )}
 
         {!loading && error && !preview && <p className="text-sm text-danger">{error}</p>}
 
@@ -96,7 +101,9 @@ export default function GroupInvitePage() {
                 </Link>
               </div>
             ) : (
-              <p className="text-sm text-muted">Chargement...</p>
+              <div className="flex justify-center py-4">
+                <BouncingDots />
+              </div>
             )}
           </>
         )}

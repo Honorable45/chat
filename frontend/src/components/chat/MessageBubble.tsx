@@ -3,11 +3,11 @@
 import { useEffect, useState } from "react";
 import { AuthenticatedImage } from "@/components/AuthenticatedImage";
 import { Avatar } from "@/components/Avatar";
-import { CheckCheckIcon, CheckIcon, ExpandIcon, FlagIcon, PersonIcon, PhoneIcon, PlusIcon, RefreshIcon, VideoIcon } from "@/components/icons";
+import { CheckCheckIcon, CheckIcon, ExpandIcon, FlagIcon, PersonIcon, PhoneIcon, PlusIcon, RefreshIcon, ReplyIcon, VideoIcon } from "@/components/icons";
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { ReportModal } from "@/components/ReportModal";
 import { api, ApiError } from "@/lib/api";
-import { displayName, timeOfDay } from "@/lib/format";
+import { displayName, quotedMessagePreview, timeOfDay } from "@/lib/format";
 import type {
   CallDetail,
   ContactStatus,
@@ -18,6 +18,7 @@ import type {
 } from "@/lib/types";
 import { MediaAlbumGrid } from "./MediaAlbumGrid";
 import { ReactionPicker } from "./ReactionPicker";
+import { SwipeToReply } from "./SwipeToReply";
 import { VoiceMessageBubble } from "./VoiceMessageBubble";
 
 /** Reconstruit le texte d'un message système à partir de l'action + de
@@ -203,18 +204,23 @@ export function MessageBubble({
   own,
   sender,
   target,
+  replyToSender,
   isGroup,
   myUserId,
   showAvatar,
   myLanguageCode,
   onDeleteVoice,
   onCallBack,
+  onReply,
+  onJumpToMessage,
 }: {
   message: Message;
   own: boolean;
   sender: ConversationParticipant | null;
   /** Cible d'un message système (voir Message.systemTargetUserId) — toujours `null` hors type SYSTEM. */
   target?: ConversationParticipant | null;
+  /** Expéditeur du message cité (voir Message.replyTo) — résolu comme `sender`/`target`, `null` hors réponse. */
+  replyToSender?: ConversationParticipant | null;
   /** Affiche le nom de l'expéditeur au-dessus d'une bulle reçue (section 8 : uniquement pertinent en groupe, jamais en DIRECT où il n'y a qu'un seul correspondant possible). */
   isGroup?: boolean;
   /** Pour distinguer sa propre réaction des autres dans message.reactions (n'importe quel message, y compris les siens, peut recevoir des réactions d'autrui). */
@@ -224,6 +230,10 @@ export function MessageBubble({
   onDeleteVoice?: (messageId: string) => void;
   /** Relance un appel du même type — bouton "rappeler" affiché uniquement sur un appel manqué (voir plus bas). */
   onCallBack?: (kind: "AUDIO" | "VIDEO") => void;
+  /** Déclenché par le geste de glissement ou le bouton "Répondre" (voir SwipeToReply) — jamais pour un message système. */
+  onReply: (message: Message) => void;
+  /** Clic sur l'aperçu cité : saute au message original (réutilise le même mécanisme que la recherche, voir chat/page.tsx::jumpToMessage). */
+  onJumpToMessage?: (messageId: string) => void;
 }) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
@@ -321,6 +331,18 @@ export function MessageBubble({
             align={own ? "end" : "start"}
           />
         )}
+        <SwipeToReply onReply={() => onReply(message)}>
+        {message.replyTo && (
+          <button
+            onClick={() => onJumpToMessage?.(message.replyTo!.id)}
+            className={`mb-1 flex max-w-full flex-col rounded-lg border-l-4 border-[var(--accent-2)] bg-surface-raised/80 px-2.5 py-1.5 text-left text-xs transition hover:bg-surface-raised ${own ? "self-end" : "self-start"}`}
+          >
+            <span className="font-medium text-[var(--accent-2)]">
+              {message.replyTo.senderId === myUserId ? "Vous" : replyToSender ? displayName(replyToSender) : "Quelqu'un"}
+            </span>
+            <span className="truncate text-muted">{quotedMessagePreview(message.replyTo)}</span>
+          </button>
+        )}
         {message.type === "VOICE" ? (
           <VoiceMessageBubble
             messageId={message.id}
@@ -396,6 +418,7 @@ export function MessageBubble({
             )}
           </div>
         )}
+        </SwipeToReply>
         </div>
 
         {reactionGroups.length > 0 && (
@@ -422,6 +445,17 @@ export function MessageBubble({
           {own && <StatusTicks message={message} />}
         </div>
       </div>
+
+      {message.type !== "CALL" && (
+        <button
+          onClick={() => onReply(message)}
+          aria-label="Répondre à ce message"
+          title="Répondre"
+          className="mb-1 self-end text-muted opacity-0 transition hover:text-foreground group-hover:opacity-100"
+        >
+          <ReplyIcon size={16} />
+        </button>
+      )}
 
       {message.type !== "CALL" && (
         <button

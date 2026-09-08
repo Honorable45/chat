@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { BouncingDots } from "@/components/BouncingDots";
 import { api, ApiError } from "@/lib/api";
 import { shortRelativeTime } from "@/lib/format";
 import type { AppNotification } from "@/lib/types";
@@ -106,7 +107,11 @@ export function NotificationsPanel({
 
       <div className="min-h-0 flex-1 overflow-y-auto glotta-scroll-hidden p-2">
         {error && <p className="px-3 py-6 text-center text-sm text-danger">{error}</p>}
-        {!error && items === null && <p className="px-3 py-6 text-center text-sm text-muted">Chargement...</p>}
+        {!error && items === null && (
+          <div className="flex justify-center py-6">
+            <BouncingDots />
+          </div>
+        )}
         {items?.length === 0 && (
           <p className="px-3 py-6 text-center text-sm text-muted">Aucune notification pour l&rsquo;instant.</p>
         )}

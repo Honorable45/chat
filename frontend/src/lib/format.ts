@@ -10,6 +10,33 @@ export function initials(p: { firstName: string; lastName: string }): string {
   return `${a}${b}`.toUpperCase() || "?";
 }
 
+/** Résumé compact d'un message pour un aperçu de citation ("répondre à...")
+ * — utilisé à la fois dans la barre de composition (MessageInput) et dans
+ * l'aperçu cité affiché à l'intérieur d'une bulle (MessageBubble). */
+export function quotedMessagePreview(m: {
+  type: string;
+  text: string | null;
+  deletedAt?: string | null;
+}): string {
+  if (m.deletedAt) return "Message supprimé";
+  switch (m.type) {
+    case "IMAGE":
+      return m.text ? `📷 ${m.text}` : "📷 Photo";
+    case "MEDIA_ALBUM":
+      return "📷 Média";
+    case "VOICE":
+      return "🎤 Message vocal";
+    case "CALL":
+      return "📞 Appel";
+    case "CONTACT_SHARE":
+      return "👤 Contact partagé";
+    case "SYSTEM":
+      return "Message système";
+    default:
+      return m.text ?? "Message";
+  }
+}
+
 // Dégradés déterministes (même id -> même dégradé) pour les avatars sans
 // photo : pas de dépendance réseau, jamais de contenu généré présenté comme
 // une vraie photo.

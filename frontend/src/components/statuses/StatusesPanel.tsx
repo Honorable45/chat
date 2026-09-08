@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Avatar } from "@/components/Avatar";
+import { BouncingDots } from "@/components/BouncingDots";
 import { PlusIcon } from "@/components/icons";
 import { api, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
@@ -114,7 +115,11 @@ export function StatusesPanel({ hiddenOnMobile }: { hiddenOnMobile?: boolean }) 
         )}
 
         {error && <p className="mb-3 text-sm text-danger">{error}</p>}
-        {statuses === null && !error && <p className="text-sm text-muted">Chargement...</p>}
+        {statuses === null && !error && (
+          <div className="flex justify-center py-6">
+            <BouncingDots />
+          </div>
+        )}
 
         {statuses !== null && otherGroups.length === 0 && (
           <p className="text-sm text-muted">Aucun statut récent de vos contacts.</p>

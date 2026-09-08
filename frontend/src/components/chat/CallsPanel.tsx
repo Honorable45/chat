@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Avatar } from "@/components/Avatar";
+import { BouncingDots } from "@/components/BouncingDots";
 import { PhoneIcon, VideoIcon } from "@/components/icons";
 import { api, ApiError, type CallHistoryEntry } from "@/lib/api";
 import { displayName, shortRelativeTime } from "@/lib/format";
@@ -65,7 +66,11 @@ export function CallsPanel({
 
       <div className="min-h-0 flex-1 overflow-y-auto glotta-scroll-hidden p-2">
         {error && <p className="px-3 py-6 text-center text-sm text-danger">{error}</p>}
-        {!error && entries === null && <p className="px-3 py-6 text-center text-sm text-muted">Chargement...</p>}
+        {!error && entries === null && (
+          <div className="flex justify-center py-6">
+            <BouncingDots />
+          </div>
+        )}
         {entries?.length === 0 && (
           <p className="px-3 py-6 text-center text-sm text-muted">Aucun appel pour l&rsquo;instant.</p>
         )}

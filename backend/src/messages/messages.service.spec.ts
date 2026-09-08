@@ -6,7 +6,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CloudinaryProvider } from '../uploads/cloudinary.provider';
 import { StorageService } from '../uploads/storage.service';
 import { EventsGateway } from '../websocket/events.gateway';
-import { MessagesService } from './messages.service';
+import { MessagesService, toMessageDto } from './messages.service';
 
 function buildMessage(overrides: Partial<Message> = {}): Message {
   return {
@@ -1181,5 +1181,57 @@ describe('MessagesService', () => {
       );
       expect(events.emitToUsers).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('toMessageDto', () => {
+  const cloudinary = {} as CloudinaryProvider;
+
+  it('renvoie replyTo: null quand le message ne répond à rien', () => {
+    const dto = toMessageDto({ ...buildMessage(), reads: [] }, cloudinary);
+    expect(dto.replyTo).toBeNull();
+  });
+
+  it('renvoie un résumé compact du message cité quand replyTo est chargé', () => {
+    const dto = toMessageDto(
+      {
+        ...buildMessage({ replyToId: 'msg-original' }),
+        reads: [],
+        replyTo: {
+          id: 'msg-original',
+          senderId: 'user-2',
+          type: 'TEXT',
+          text: 'Le message original',
+          deletedAt: null,
+        },
+      },
+      cloudinary,
+    );
+    expect(dto.replyTo).toEqual({
+      id: 'msg-original',
+      senderId: 'user-2',
+      type: 'TEXT',
+      text: 'Le message original',
+      deletedAt: null,
+    });
+  });
+
+  it('propage deletedAt du message cité (permet au frontend d\'afficher "Message supprimé" dans la citation)', () => {
+    const deletedAt = new Date();
+    const dto = toMessageDto(
+      {
+        ...buildMessage({ replyToId: 'msg-original' }),
+        reads: [],
+        replyTo: {
+          id: 'msg-original',
+          senderId: 'user-2',
+          type: 'TEXT',
+          text: 'Le message original',
+          deletedAt,
+        },
+      },
+      cloudinary,
+    );
+    expect(dto.replyTo?.deletedAt).toBe(deletedAt);
   });
 });

@@ -2,9 +2,9 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Socket } from "socket.io-client";
-import { ImageIcon, MicIcon, PersonIcon, SendIcon, XIcon } from "@/components/icons";
-import { displayName, formatDuration } from "@/lib/format";
-import type { ConversationParticipant } from "@/lib/types";
+import { ImageIcon, MicIcon, PersonIcon, ReplyIcon, SendIcon, XIcon } from "@/components/icons";
+import { displayName, formatDuration, quotedMessagePreview } from "@/lib/format";
+import type { ConversationParticipant, Message } from "@/lib/types";
 import { useVoiceRecorder, type VoiceRecording } from "@/lib/use-voice-recorder";
 
 const TYPING_STOP_DELAY_MS = 2500;
@@ -19,6 +19,9 @@ export function MessageInput({
   onPickMedia,
   onPickContact,
   mentionCandidates,
+  replyingTo,
+  replyingToSenderName,
+  onCancelReply,
 }: {
   conversationId: string;
   socket: Socket | null;
@@ -30,6 +33,11 @@ export function MessageInput({
   onPickContact: () => void;
   /** Membres du groupe pour l'autocomplétion @nom (section 12) — absent/undefined en conversation DIRECT, où mentionner n'a pas de sens. */
   mentionCandidates?: ConversationParticipant[];
+  /** Message auquel on répond (voir SwipeToReply/MessageBubble) — `null` hors réponse. L'ID est déjà injecté par ChatWindow dans `onSend`/`onSendVoice`, jamais ici. */
+  replyingTo?: Message | null;
+  /** "Vous" ou le nom de l'expéditeur cité — déjà résolu par ChatWindow (accès aux membres/à `me`), jamais recalculé ici. */
+  replyingToSenderName?: string | null;
+  onCancelReply?: () => void;
 }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -180,6 +188,26 @@ export function MessageInput({
 
   return (
     <div className="border-t border-border">
+      {replyingTo && (
+        <div className="flex items-center gap-2 border-b border-border bg-surface-raised/60 px-4 py-2">
+          <ReplyIcon size={16} className="shrink-0 text-[var(--accent-2)]" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-medium text-[var(--accent-2)]">
+              {replyingToSenderName ?? "Vous"}
+            </p>
+            <p className="truncate text-xs text-muted">{quotedMessagePreview(replyingTo)}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onCancelReply}
+            aria-label="Annuler la réponse"
+            title="Annuler"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted transition hover:bg-surface hover:text-foreground"
+          >
+            <XIcon size={14} />
+          </button>
+        </div>
+      )}
       <form onSubmit={submit} className="flex items-center gap-2 px-4 py-3">
         <input
           ref={fileInputRef}

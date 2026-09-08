@@ -94,7 +94,13 @@ export function VoiceMessageBubble({
   const objectUrlRef = useRef<string | null>(null);
   const [state, setState] = useState<"idle" | "loading" | "playing" | "paused" | "error">("idle");
   const [progress, setProgress] = useState(0); // 0..1
-  const [duration, setDuration] = useState<number | null>(null);
+  // Initialisée depuis voice.durationSeconds (mesurée par l'enregistreur au
+  // moment de l'envoi, déjà fiable — voir use-voice-recorder.ts) plutôt que
+  // `null` : `audio.duration` d'un blob WebM issu de MediaRecorder renvoie
+  // très souvent `Infinity` sur Chrome au moment de "loadedmetadata" (durée
+  // absente du conteneur), ce qui affichait "0:00" et bloquait la
+  // progression de la barre de lecture — bug réel constaté en prod.
+  const [duration, setDuration] = useState<number | null>(voice?.durationSeconds ?? null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [showTranslation, setShowTranslation] = useState(false);
   const [sharing, setSharing] = useState(false);
@@ -132,9 +138,19 @@ export function VoiceMessageBubble({
     objectUrlRef.current = url;
 
     const audio = new Audio(url);
-    audio.addEventListener("loadedmetadata", () => setDuration(audio.duration));
+    // Ne remplace jamais une durée déjà connue (voir voice.durationSeconds
+    // ci-dessus) par une valeur non finie — seulement si le navigateur
+    // fournit une vraie mesure exploitable.
+    audio.addEventListener("loadedmetadata", () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) setDuration(audio.duration);
+    });
     audio.addEventListener("timeupdate", () => {
-      if (audio.duration) setProgress(audio.currentTime / audio.duration);
+      // `audio.duration` (Infinity sur un WebM MediaRecorder tant que la
+      // lecture n'a pas assez avancé) ne doit jamais servir de diviseur ici
+      // — la durée connue par ailleurs (voice.durationSeconds) reste le
+      // dénominateur fiable pour faire avancer la barre de progression.
+      const total = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : duration;
+      if (total) setProgress(audio.currentTime / total);
     });
     audio.addEventListener("ended", () => {
       setState("paused");

@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { BouncingDots } from "@/components/BouncingDots";
 import { ChatIcon } from "@/components/icons";
 import { CallOverlay } from "@/components/chat/CallOverlay";
 import { CallsPanel } from "@/components/chat/CallsPanel";
@@ -62,6 +63,7 @@ function toCallMessage(payload: CallMessagePayload): Message {
     systemAction: null,
     systemTargetUserId: null,
     replyToId: null,
+    replyTo: null,
     editedAt: null,
     deletedAt: null,
     sentAt: payload.sentAt,
@@ -420,9 +422,9 @@ function ChatPageInner() {
     [selected, hydrateVoiceMessages, hydrateCallMessages, hydrateContactShareMessages],
   );
 
-  async function sendMessage(text: string) {
+  async function sendMessage(text: string, replyToId?: string) {
     if (!selected) return;
-    const msg = await api.messages.send(selected.id, text);
+    const msg = await api.messages.send(selected.id, text, replyToId);
     setMessages((prev) => [...prev, msg]);
     patchConversation(selected.id, {
       lastMessage: toLastMessage(msg),
@@ -440,7 +442,7 @@ function ChatPageInner() {
     });
   }
 
-  async function sendVoiceMessage(recording: VoiceRecording) {
+  async function sendVoiceMessage(recording: VoiceRecording, replyToId?: string) {
     if (!selected) return;
     try {
       const raw = await api.voice.send({
@@ -448,6 +450,7 @@ function ChatPageInner() {
         durationSeconds: recording.durationSeconds,
         blob: recording.blob,
         mimeType: recording.mimeType,
+        replyToId,
       });
       const msg = normalizeIncomingMessage(raw);
       if (!msg) return;
@@ -461,7 +464,7 @@ function ChatPageInner() {
     }
   }
 
-  async function sendMediaMessage(files: File[], caption: string) {
+  async function sendMediaMessage(files: File[], caption: string, replyToId?: string) {
     if (!selected) return;
     try {
       // Lu réellement depuis chaque fichier (jamais inventé, voir media-metadata.ts)
@@ -472,6 +475,7 @@ function ChatPageInner() {
         files,
         text: caption || undefined,
         meta,
+        replyToId,
       });
       setMessages((prev) => [...prev, msg]);
       patchConversation(selected.id, {
@@ -823,16 +827,20 @@ function ChatPageInner() {
         />
       ) : (
         <div className="hidden flex-1 flex-col items-center justify-center gap-3 text-center lg:flex">
-          <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-surface-raised text-muted">
-            <ChatIcon size={28} />
-          </span>
-          <p className="text-sm text-muted">
-            {loadingConversations
-              ? "Chargement..."
-              : conversations.length === 0
-                ? "Aucune conversation pour l'instant. Cliquez sur + pour en démarrer une."
-                : "Sélectionnez une conversation."}
-          </p>
+          {loadingConversations ? (
+            <BouncingDots />
+          ) : (
+            <>
+              <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-surface-raised text-muted">
+                <ChatIcon size={28} />
+              </span>
+              <p className="text-sm text-muted">
+                {conversations.length === 0
+                  ? "Aucune conversation pour l'instant. Cliquez sur + pour en démarrer une."
+                  : "Sélectionnez une conversation."}
+              </p>
+            </>
+          )}
         </div>
       )}
 

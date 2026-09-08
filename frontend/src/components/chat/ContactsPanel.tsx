@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Avatar } from "@/components/Avatar";
+import { BouncingDots } from "@/components/BouncingDots";
 import { CheckIcon, PersonIcon, PlusIcon, SearchIcon, XIcon } from "@/components/icons";
 import { api, ApiError } from "@/lib/api";
 import { displayName } from "@/lib/format";
@@ -197,7 +198,11 @@ export function ContactsPanel({
               </div>
             )}
 
-            {contacts === null && <p className="px-3 py-6 text-center text-sm text-muted">Chargement...</p>}
+            {contacts === null && (
+              <div className="flex justify-center py-6">
+                <BouncingDots />
+              </div>
+            )}
             {contacts?.length === 0 && incoming.length === 0 && (
               <div className="flex flex-col items-center gap-2 px-3 py-10 text-center text-sm text-muted">
                 <PersonIcon size={28} className="opacity-40" />

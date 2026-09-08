@@ -350,6 +350,11 @@ export class ContactsService {
       systemAction: null,
       systemTargetUserId: null,
       replyToId: null,
+      // Idem : un message CONTACT_SHARE ne peut pas être une réponse
+      // aujourd'hui (jamais construit avec un replyToId), mais le champ
+      // reste requis côté frontend (Message.replyTo) — toujours présent
+      // même null, jamais absent.
+      replyTo: null,
       editedAt: null,
       deletedAt: null,
       sentAt: message.sentAt,

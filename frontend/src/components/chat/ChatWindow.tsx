@@ -59,10 +59,11 @@ export function ChatWindow({
   onLoadOlder: () => void;
   isOtherTyping: boolean;
   socket: Socket | null;
-  onSend: (text: string) => Promise<void>;
-  onSendVoice: (recording: VoiceRecording) => Promise<void>;
+  /** `replyToId` : message auquel on répond (voir état `replyingTo` ci-dessous), jamais fourni par l'appelant. */
+  onSend: (text: string, replyToId?: string) => Promise<void>;
+  onSendVoice: (recording: VoiceRecording, replyToId?: string) => Promise<void>;
   /** Un ou plusieurs médias envoyés ensemble — voir MediaComposerModal, jamais un fichier par action. */
-  onSendMedia: (files: File[], caption: string) => Promise<void>;
+  onSendMedia: (files: File[], caption: string, replyToId?: string) => Promise<void>;
   /** Partage la carte publique d'un utilisateur — voir ShareContactModal. */
   onSendContact: (userId: string) => Promise<void>;
   onDeleteVoice: (messageId: string) => void;
@@ -82,6 +83,15 @@ export function ChatWindow({
   const [composerFiles, setComposerFiles] = useState<File[] | null>(null);
   const [contactPickerOpen, setContactPickerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  // Message auquel on est en train de répondre (voir SwipeToReply/le bouton
+  // "Répondre" de MessageBubble) — réinitialisé en changeant de conversation
+  // (une réponse en cours n'a plus de sens ailleurs) et après un envoi.
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  useEffect(() => {
+    // queueMicrotask : le corps de l'effet ne doit jamais déclencher de
+    // setState de façon synchrone — même motif que auth-context.tsx.
+    queueMicrotask(() => setReplyingTo(null));
+  }, [conversation.id]);
 
   // Un saut vers un résultat de recherche gère lui-même son défilement (voir
   // l'effet suivant) — jamais aussi tirer la vue tout en bas dans ce cas,
@@ -109,6 +119,13 @@ export function ChatWindow({
     [conversation.members],
   );
 
+  // Nom affiché dans la barre "Vous répondez à..." (voir MessageInput) — le
+  // cas "Vous" est géré séparément là où cette valeur est utilisée.
+  const replyingToSenderDisplay =
+    replyingTo && replyingTo.senderId !== me.id
+      ? displayName(membersById.get(replyingTo.senderId) ?? other ?? { firstName: "Quelqu'un", lastName: "" })
+      : null;
+
   // Pas d'accumulateur mutable (react-hooks/immutability) : chaque ligne ne
   // regarde que son propre message et le précédent, jamais une variable
   // reportée d'une itération à l'autre.
@@ -117,14 +134,22 @@ export function ChatWindow({
       messages.map((m, i) => {
         const prev = messages[i - 1];
         const label = dayLabel(m.sentAt);
+        // Même résolution que `sender` plus bas (own -> null, sinon membre du
+        // groupe ou "other" en DIRECT) — jamais absent tant que replyTo l'est.
+        const replyToSender = m.replyTo
+          ? m.replyTo.senderId === me.id
+            ? null
+            : (membersById.get(m.replyTo.senderId) ?? other ?? null)
+          : null;
         return {
           message: m,
           label,
           showDaySeparator: !prev || dayLabel(prev.sentAt) !== label,
           showAvatar: !prev || prev.senderId !== m.senderId,
+          replyToSender,
         };
       }),
-    [messages],
+    [messages, me.id, membersById, other],
   );
 
   return (
@@ -250,7 +275,7 @@ export function ChatWindow({
         )}
 
         <div className="flex flex-col gap-3">
-          {rows.map(({ message: m, label, showDaySeparator, showAvatar }) => {
+          {rows.map(({ message: m, label, showDaySeparator, showAvatar, replyToSender }) => {
             const own = m.senderId === me.id;
             const sender = own ? null : (membersById.get(m.senderId) ?? other);
             return (
@@ -276,12 +301,15 @@ export function ChatWindow({
                   own={own}
                   sender={sender}
                   target={m.systemTargetUserId ? (membersById.get(m.systemTargetUserId) ?? null) : null}
+                  replyToSender={replyToSender}
                   isGroup={isGroup}
                   myUserId={me.id}
                   showAvatar={showAvatar}
                   myLanguageCode={me.preferredReceiveLanguage?.code ?? me.primaryLanguage?.code}
                   onDeleteVoice={onDeleteVoice}
                   onCallBack={canCall ? onStartCall : undefined}
+                  onReply={setReplyingTo}
+                  onJumpToMessage={onJumpToMessage}
                 />
               </div>
             );
@@ -293,11 +321,22 @@ export function ChatWindow({
       <MessageInput
         conversationId={conversation.id}
         socket={socket}
-        onSend={onSend}
-        onSendVoice={onSendVoice}
+        onSend={async (text) => {
+          await onSend(text, replyingTo?.id);
+          setReplyingTo(null);
+        }}
+        onSendVoice={async (recording) => {
+          await onSendVoice(recording, replyingTo?.id);
+          setReplyingTo(null);
+        }}
         onPickMedia={setComposerFiles}
         onPickContact={() => setContactPickerOpen(true)}
         mentionCandidates={isGroup ? conversation.members : undefined}
+        replyingTo={replyingTo}
+        replyingToSenderName={
+          replyingTo ? (replyingTo.senderId === me.id ? "Vous" : replyingToSenderDisplay) : null
+        }
+        onCancelReply={() => setReplyingTo(null)}
       />
 
       {composerFiles && (
@@ -305,8 +344,9 @@ export function ChatWindow({
           initialFiles={composerFiles}
           onClose={() => setComposerFiles(null)}
           onSend={async (files, caption) => {
-            await onSendMedia(files, caption);
+            await onSendMedia(files, caption, replyingTo?.id);
             setComposerFiles(null);
+            setReplyingTo(null);
           }}
         />
       )}

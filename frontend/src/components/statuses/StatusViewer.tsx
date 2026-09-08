@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { AuthenticatedImage } from "@/components/AuthenticatedImage";
 import { AuthenticatedVideo } from "@/components/AuthenticatedVideo";
 import { Avatar } from "@/components/Avatar";
+import { BouncingDots } from "@/components/BouncingDots";
 import { FlagIcon, UsersIcon, XIcon } from "@/components/icons";
 import { ReportModal } from "@/components/ReportModal";
 import { api, ApiError } from "@/lib/api";
@@ -236,7 +237,11 @@ export function StatusViewer({
                 <XIcon size={16} />
               </button>
             </div>
-            {views === null && <p className="py-4 text-center text-sm text-muted">Chargement...</p>}
+            {views === null && (
+              <div className="flex justify-center py-4">
+                <BouncingDots />
+              </div>
+            )}
             {views?.length === 0 && <p className="py-4 text-center text-sm text-muted">Personne pour l&rsquo;instant.</p>}
             {views?.map((v) => (
               <div key={v.viewer.id} className="flex items-center gap-2.5 py-1.5">

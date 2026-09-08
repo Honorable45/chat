@@ -275,6 +275,17 @@ export interface Message {
   systemAction: GroupSystemAction | null;
   systemTargetUserId: string | null;
   replyToId: string | null;
+  /** Résumé compact du message cité (pas le message complet — jamais ses
+   * propres pièces jointes/réactions), pour afficher l'aperçu de citation
+   * sans dépendre de la page de messages actuellement chargée. `null` tant
+   * que `replyToId` l'est aussi. */
+  replyTo: {
+    id: string;
+    senderId: string;
+    type: MessageType;
+    text: string | null;
+    deletedAt: string | null;
+  } | null;
   editedAt: string | null;
   deletedAt: string | null;
   sentAt: string;

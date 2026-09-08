@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AuthenticatedImage } from "@/components/AuthenticatedImage";
 import { Avatar } from "@/components/Avatar";
+import { BouncingDots } from "@/components/BouncingDots";
 import { CheckIcon, PlayIcon, RefreshIcon, SettingsIcon, ShareIcon, ShieldIcon, TrashIcon, UsersIcon, XIcon } from "@/components/icons";
 import { MediaGalleryLightbox, type GalleryItem } from "@/components/MediaGalleryLightbox";
 import { Toggle } from "@/components/Toggle";
@@ -111,7 +112,11 @@ function SharedMediaGrid({ conversationId }: { conversationId: string }) {
   }
 
   if (media === null) {
-    return <p className="text-sm text-muted">Chargement...</p>;
+    return (
+      <div className="flex justify-center py-6">
+        <BouncingDots />
+      </div>
+    );
   }
   if (media.length === 0) {
     return <p className="text-sm text-muted">Aucun média partagé pour l&rsquo;instant.</p>;
@@ -141,9 +146,9 @@ function SharedMediaGrid({ conversationId }: { conversationId: string }) {
         <button
           onClick={() => void loadMore()}
           disabled={loadingMore}
-          className="mt-2.5 w-full rounded-full border border-border py-1.5 text-xs text-muted transition hover:bg-surface-raised disabled:opacity-60"
+          className="mt-2.5 flex w-full items-center justify-center rounded-full border border-border py-1.5 text-xs text-muted transition hover:bg-surface-raised disabled:opacity-60"
         >
-          {loadingMore ? "Chargement..." : "Charger plus"}
+          {loadingMore ? <BouncingDots /> : "Charger plus"}
         </button>
       )}
       {lightboxIndex !== null && (
