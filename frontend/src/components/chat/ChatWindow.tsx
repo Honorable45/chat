@@ -13,7 +13,7 @@ import { MediaComposerModal } from "./MediaComposerModal";
 import { MessageBubble } from "./MessageBubble";
 import { MessageInput } from "./MessageInput";
 import { MessageSearchPanel } from "./MessageSearchPanel";
-import { ShareContactModal } from "./ShareContactModal";
+import { ShareLocationModal } from "./ShareLocationModal";
 
 function dayLabel(iso: string): string {
   const date = new Date(iso);
@@ -39,8 +39,9 @@ export function ChatWindow({
   socket,
   onSend,
   onSendVoice,
+  onSendSticker,
   onSendMedia,
-  onSendContact,
+  onSendLocation,
   onDeleteVoice,
   infoOpen,
   onToggleInfo,
@@ -62,10 +63,11 @@ export function ChatWindow({
   /** `replyToId` : message auquel on répond (voir état `replyingTo` ci-dessous), jamais fourni par l'appelant. */
   onSend: (text: string, replyToId?: string) => Promise<void>;
   onSendVoice: (recording: VoiceRecording, replyToId?: string) => Promise<void>;
+  onSendSticker: (emoji: string, replyToId?: string) => Promise<void>;
   /** Un ou plusieurs médias envoyés ensemble — voir MediaComposerModal, jamais un fichier par action. */
   onSendMedia: (files: File[], caption: string, replyToId?: string) => Promise<void>;
-  /** Partage la carte publique d'un utilisateur — voir ShareContactModal. */
-  onSendContact: (userId: string) => Promise<void>;
+  /** Position ponctuelle — voir ShareLocationModal. */
+  onSendLocation: (latitude: number, longitude: number, replyToId?: string) => Promise<void>;
   onDeleteVoice: (messageId: string) => void;
   infoOpen: boolean;
   onToggleInfo: () => void;
@@ -81,7 +83,7 @@ export function ChatWindow({
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messageRefs = useRef(new Map<string, HTMLDivElement>());
   const [composerFiles, setComposerFiles] = useState<File[] | null>(null);
-  const [contactPickerOpen, setContactPickerOpen] = useState(false);
+  const [locationPickerOpen, setLocationPickerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   // Message auquel on est en train de répondre (voir SwipeToReply/le bouton
   // "Répondre" de MessageBubble) — réinitialisé en changeant de conversation
@@ -329,8 +331,12 @@ export function ChatWindow({
           await onSendVoice(recording, replyingTo?.id);
           setReplyingTo(null);
         }}
+        onSendSticker={async (emoji) => {
+          await onSendSticker(emoji, replyingTo?.id);
+          setReplyingTo(null);
+        }}
         onPickMedia={setComposerFiles}
-        onPickContact={() => setContactPickerOpen(true)}
+        onPickLocation={() => setLocationPickerOpen(true)}
         mentionCandidates={isGroup ? conversation.members : undefined}
         replyingTo={replyingTo}
         replyingToSenderName={
@@ -351,8 +357,14 @@ export function ChatWindow({
         />
       )}
 
-      {contactPickerOpen && (
-        <ShareContactModal onClose={() => setContactPickerOpen(false)} onShare={onSendContact} />
+      {locationPickerOpen && (
+        <ShareLocationModal
+          onClose={() => setLocationPickerOpen(false)}
+          onShare={async (latitude, longitude) => {
+            await onSendLocation(latitude, longitude, replyingTo?.id);
+            setReplyingTo(null);
+          }}
+        />
       )}
     </div>
   );

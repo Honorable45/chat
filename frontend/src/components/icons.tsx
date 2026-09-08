@@ -348,3 +348,42 @@ export const FlagIcon = (p: IconProps) =>
     </>,
     p,
   );
+
+/** "Partager la position" (voir MessageInput/ShareLocationModal). */
+export const MapPinIcon = (p: IconProps) =>
+  base(
+    <>
+      <path d="M12 21s7-6.5 7-12a7 7 0 1 0-14 0c0 5.5 7 12 7 12Z" />
+      <circle cx="12" cy="9" r="2.5" />
+    </>,
+    p,
+  );
+
+/** Sélecteur de stickers (voir MessageInput/StickerPicker) — un gros emoji "smiley" tient lieu de vraie icône de sticker. */
+export const StickerIcon = (p: IconProps) =>
+  base(
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8.5 10.5h.01M15.5 10.5h.01" />
+      <path d="M8 14.5s1.5 2 4 2 4-2 4-2" />
+    </>,
+    p,
+  );
+
+/** Favori (voir StickerPicker) — `filled` en dehors de `base()` : seule icône du set dont le remplissage bascule dynamiquement plutôt que d'être fixe. */
+export const StarIcon = ({ size = 20, className = "", filled = false }: IconProps & { filled?: boolean }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill={filled ? "currentColor" : "none"}
+    stroke="currentColor"
+    strokeWidth={1.75}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden="true"
+  >
+    <path d="m12 3 2.6 5.6 6.1.6-4.6 4.1 1.3 6-5.4-3.2-5.4 3.2 1.3-6-4.6-4.1 6.1-.6Z" />
+  </svg>
+);

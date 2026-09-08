@@ -35,7 +35,9 @@ import { ListMediaQueryDto } from './dto/list-media-query.dto';
 import { ListMessagesQueryDto } from './dto/list-messages-query.dto';
 import { SearchMessagesQueryDto } from './dto/search-messages-query.dto';
 import { SendImageMessageDto } from './dto/send-image-message.dto';
+import { SendLocationMessageDto } from './dto/send-location-message.dto';
 import { SendMediaMessageDto } from './dto/send-media-message.dto';
+import { SendStickerMessageDto } from './dto/send-sticker-message.dto';
 import { UpdateMessageDto } from './dto/update-message.dto';
 import { MessagesService } from './messages.service';
 
@@ -91,6 +93,16 @@ export class MessagesController {
     @Body() dto: SendMediaMessageDto,
   ) {
     return this.messages.sendMedia(user.userId, dto, files);
+  }
+
+  @Post('messages/location')
+  sendLocation(@CurrentUser() user: AuthenticatedUser, @Body() dto: SendLocationMessageDto) {
+    return this.messages.sendLocation(user.userId, dto);
+  }
+
+  @Post('messages/sticker')
+  sendSticker(@CurrentUser() user: AuthenticatedUser, @Body() dto: SendStickerMessageDto) {
+    return this.messages.sendSticker(user.userId, dto);
   }
 
   // Limite globale par défaut (60/min, voir app.module.ts) beaucoup trop

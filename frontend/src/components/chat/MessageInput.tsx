@@ -2,10 +2,11 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Socket } from "socket.io-client";
-import { ImageIcon, MicIcon, PersonIcon, ReplyIcon, SendIcon, XIcon } from "@/components/icons";
+import { ImageIcon, MapPinIcon, MicIcon, PersonIcon, ReplyIcon, SendIcon, StickerIcon, XIcon } from "@/components/icons";
 import { displayName, formatDuration, quotedMessagePreview } from "@/lib/format";
 import type { ConversationParticipant, Message } from "@/lib/types";
 import { useVoiceRecorder, type VoiceRecording } from "@/lib/use-voice-recorder";
+import { StickerPicker } from "./StickerPicker";
 
 const TYPING_STOP_DELAY_MS = 2500;
 const ACCEPTED_MEDIA_TYPES = "image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime";
@@ -16,8 +17,9 @@ export function MessageInput({
   socket,
   onSend,
   onSendVoice,
+  onSendSticker,
   onPickMedia,
-  onPickContact,
+  onPickLocation,
   mentionCandidates,
   replyingTo,
   replyingToSenderName,
@@ -27,10 +29,11 @@ export function MessageInput({
   socket: Socket | null;
   onSend: (text: string) => Promise<void>;
   onSendVoice: (recording: VoiceRecording) => Promise<void>;
+  onSendSticker: (emoji: string) => Promise<void>;
   /** Ouvre l'écran de prévisualisation (voir MediaComposerModal, dans ChatWindow) — jamais envoyé directement depuis ici. */
   onPickMedia: (files: File[]) => void;
-  /** Ouvre le sélecteur de contact à partager (voir ShareContactModal, dans ChatWindow). */
-  onPickContact: () => void;
+  /** Ouvre la confirmation de partage de position (voir ShareLocationModal, dans ChatWindow) — remplace l'ancien partage de contact à cet emplacement. */
+  onPickLocation: () => void;
   /** Membres du groupe pour l'autocomplétion @nom (section 12) — absent/undefined en conversation DIRECT, où mentionner n'a pas de sens. */
   mentionCandidates?: ConversationParticipant[];
   /** Message auquel on répond (voir SwipeToReply/MessageBubble) — `null` hors réponse. L'ID est déjà injecté par ChatWindow dans `onSend`/`onSendVoice`, jamais ici. */
@@ -46,6 +49,18 @@ export function MessageInput({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
   const recorder = useVoiceRecorder();
+  const [stickerPickerOpen, setStickerPickerOpen] = useState(false);
+  const [sendingSticker, setSendingSticker] = useState(false);
+
+  async function pickSticker(emoji: string) {
+    setStickerPickerOpen(false);
+    setSendingSticker(true);
+    try {
+      await onSendSticker(emoji);
+    } finally {
+      setSendingSticker(false);
+    }
+  }
 
   // Position du "@" en cours de frappe (index dans `text`) — `null` quand
   // aucune mention n'est activement composée. `mentionQuery` est le texte
@@ -231,12 +246,26 @@ export function MessageInput({
         </button>
         <button
           type="button"
-          onClick={onPickContact}
-          title="Partager un contact"
+          onClick={onPickLocation}
+          title="Partager ma position"
           className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground"
         >
-          <PersonIcon size={18} />
+          <MapPinIcon size={18} />
         </button>
+        <div className="relative shrink-0">
+          <button
+            type="button"
+            onClick={() => setStickerPickerOpen((v) => !v)}
+            disabled={sendingSticker}
+            title="Envoyer un sticker"
+            className="flex h-9 w-9 items-center justify-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground disabled:opacity-50"
+          >
+            <StickerIcon size={18} />
+          </button>
+          {stickerPickerOpen && (
+            <StickerPicker onSelect={(emoji) => void pickSticker(emoji)} onClose={() => setStickerPickerOpen(false)} />
+          )}
+        </div>
         <button
           type="button"
           onClick={() => void recorder.start()}

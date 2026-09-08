@@ -24,6 +24,7 @@ import { PresenceModule } from './presence/presence.module';
 import { StatusesModule } from './statuses/statuses.module';
 import { UploadsModule } from './uploads/uploads.module';
 import { PushModule } from './push/push.module';
+import { StickersModule } from './stickers/stickers.module';
 import { WebsocketModule } from './websocket/websocket.module';
 
 @Module({
@@ -73,6 +74,7 @@ import { WebsocketModule } from './websocket/websocket.module';
     StatusesModule,
     UploadsModule,
     PushModule,
+    StickersModule,
     WebsocketModule,
     MaintenanceModule,
     ReportsModule,

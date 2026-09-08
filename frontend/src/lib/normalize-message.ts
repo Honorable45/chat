@@ -39,6 +39,7 @@ export function normalizeIncomingMessage(raw: unknown): Message | null {
       reactions: [],
       mentions: [],
       mentionsEveryone: false,
+      location: null,
       voice: voice ?? undefined,
     };
   }

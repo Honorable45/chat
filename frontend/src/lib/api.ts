@@ -415,6 +415,20 @@ export const api = {
     addReaction: (id: string, emoji: string) =>
       request<Message>(`/messages/${id}/reactions`, { method: "POST", body: { emoji } }),
     removeReaction: (id: string) => request<Message>(`/messages/${id}/reactions`, { method: "DELETE" }),
+    // Position ponctuelle (voir ShareLocationModal) — une seule capture au
+    // moment de l'envoi, jamais mise à jour ensuite.
+    sendLocation: (params: { conversationId: string; latitude: number; longitude: number; replyToId?: string }) =>
+      request<Message>("/messages/location", { method: "POST", body: params }),
+    // Sticker = gros emoji envoyé comme bulle à part entière (voir StickerPicker).
+    sendSticker: (params: { conversationId: string; emoji: string; replyToId?: string }) =>
+      request<Message>("/messages/sticker", { method: "POST", body: params }),
+  },
+  stickers: {
+    favorites: () => request<string[]>("/stickers/favorites"),
+    addFavorite: (emoji: string) =>
+      request<void>("/stickers/favorites", { method: "POST", body: { emoji } }),
+    removeFavorite: (emoji: string) =>
+      request<void>(`/stickers/favorites/${encodeURIComponent(emoji)}`, { method: "DELETE" }),
   },
   voice: {
     audioUrl: (messageId: string) => `${API_URL}/voice/${messageId}/audio`,

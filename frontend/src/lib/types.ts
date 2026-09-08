@@ -81,6 +81,8 @@ export type MessageType =
   | "CALL"
   | "MEDIA_ALBUM"
   | "CONTACT_SHARE"
+  | "LOCATION"
+  | "STICKER"
   | "SYSTEM";
 
 /** Sans effet pour une conversation DIRECT (toujours MEMBER des deux côtés, jamais affiché). */
@@ -314,7 +316,26 @@ export interface Message {
    * backend) : jamais besoin de conversion, juste absent tant qu'un message
    * chargé depuis l'historique n'a pas encore été hydraté. */
   sharedContact?: PublicUser;
+  /** Uniquement renseigné quand `type === "LOCATION"` — une seule capture au moment de l'envoi, jamais mise à jour ensuite (pas de position en direct). */
+  location: { latitude: number; longitude: number } | null;
 }
+
+/** Grand jeu d'emojis pour le sélecteur de stickers (voir StickerPicker.tsx)
+ * — un "sticker" est ici un gros emoji envoyé comme bulle à part entière
+ * (voir MessageType.STICKER), aucune vraie image/pack n'étant disponible
+ * pour ce projet. Volontairement plus large que ALLOWED_REACTION_EMOJIS
+ * (6 emojis fixes pour les réactions rapides) : parcourir/choisir un
+ * sticker est une action délibérée, pas un raccourci contextuel. */
+export const STICKER_EMOJIS = [
+  "😀", "😂", "🥹", "😍", "😘", "😜", "🤪", "🤩", "🥳", "😎",
+  "🤔", "🙄", "😴", "🤯", "🥶", "🥵", "😭", "😡", "🤬", "😱",
+  "🤗", "🤫", "🤭", "😇", "🙃", "😏", "🤤", "🥰", "😅", "😬",
+  "👍", "👎", "👏", "🙏", "💪", "🤝", "✌️", "🤙", "👋", "🤦",
+  "🤷", "💃", "🕺", "🎉", "🎊", "🔥", "✨", "💯", "💔", "❤️",
+  "💕", "💖", "😢", "🥺", "😤", "🤣", "😳", "🫡", "🫶", "👀",
+  "🐶", "🐱", "🐼", "🦄", "🐸", "🍕", "🍔", "🍩", "☕", "🍺",
+  "⚽", "🎮", "🎵", "📸", "🌟", "🌈", "☀️", "🌙", "⏰", "🎁",
+] as const;
 
 export interface Page<T> {
   items: T[];

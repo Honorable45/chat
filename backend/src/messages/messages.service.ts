@@ -24,7 +24,9 @@ import { EventsGateway } from '../websocket/events.gateway';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { ListMessagesQueryDto } from './dto/list-messages-query.dto';
 import { SendImageMessageDto } from './dto/send-image-message.dto';
+import { SendLocationMessageDto } from './dto/send-location-message.dto';
 import { SendMediaMessageDto } from './dto/send-media-message.dto';
+import { SendStickerMessageDto } from './dto/send-sticker-message.dto';
 import { UpdateMessageDto } from './dto/update-message.dto';
 
 /** Une entrée de `SendMediaMessageDto.meta` — jamais interprétée avant validation champ par champ, voir readMeta(). */
@@ -92,6 +94,11 @@ export const MESSAGE_INCLUDE = {
   // bien plus ancien). Jamais le message cité en entier (pas ses propres
   // pièces jointes/réactions) : juste de quoi construire un résumé compact.
   replyTo: { select: { id: true, senderId: true, type: true, text: true, deletedAt: true } },
+  // Position ponctuelle (type LOCATION) — minuscule (2 flottants), intégrée
+  // directement ici plutôt qu'hydratée à la demande comme VOICE/CALL/
+  // CONTACT_SHARE : pas de contenu volumineux à différer, l'afficher tout de
+  // suite évite un aller-retour réseau supplémentaire pour si peu.
+  location: { select: { latitude: true, longitude: true } },
 } satisfies Prisma.MessageInclude;
 
 type MessageAttachment = {
@@ -119,6 +126,7 @@ type MessageWithReads = Message & {
     text: string | null;
     deletedAt: Date | null;
   } | null;
+  location?: { latitude: number; longitude: number } | null;
 };
 
 export function toMessageDto(message: MessageWithReads, cloudinary: CloudinaryProvider) {
@@ -164,6 +172,11 @@ export function toMessageDto(message: MessageWithReads, cloudinary: CloudinaryPr
     // URL authentifiée, jamais la clé de stockage interne (même principe que
     // VoiceService/StatusesService) — vide pour un message sans pièce jointe.
     attachments: (message.attachments ?? []).map((a) => toAttachmentDto(a, cloudinary)),
+    // Uniquement renseigné pour type LOCATION (voir Message.location, une
+    // seule capture au moment de l'envoi, jamais mise à jour ensuite).
+    location: message.location
+      ? { latitude: message.location.latitude, longitude: message.location.longitude }
+      : null,
     createdAt: message.createdAt,
   };
 }
@@ -605,6 +618,116 @@ export class MessagesService {
     );
 
     return toMessageDto(mediaFinalMessage, this.cloudinary);
+  }
+
+  /**
+   * Position ponctuelle (section "partage de position") — une seule capture
+   * au moment de l'envoi, jamais mise à jour ensuite (pas de "position en
+   * direct", hors périmètre). Les coordonnées elles-mêmes sont déjà
+   * validées en forme par SendLocationMessageDto (@IsLatitude/@IsLongitude) ;
+   * rien de plus à vérifier ici, contrairement à un fichier uploadé.
+   */
+  async sendLocation(userId: string, dto: SendLocationMessageDto): Promise<MessageDto> {
+    await this.assertMembership(userId, dto.conversationId);
+
+    if (dto.replyToId) {
+      const replyTarget = await this.prisma.message.findUnique({ where: { id: dto.replyToId } });
+      if (!replyTarget || replyTarget.conversationId !== dto.conversationId) {
+        throw new BadRequestException(
+          'Le message auquel vous répondez est introuvable dans cette conversation.',
+        );
+      }
+    }
+
+    const recipients = await this.otherMemberIds(dto.conversationId, userId);
+    const deliveredAt = recipients.some((id) => this.presence.isOnline(id)) ? new Date() : null;
+
+    const [message] = await this.prisma.$transaction([
+      this.prisma.message.create({
+        data: {
+          conversationId: dto.conversationId,
+          senderId: userId,
+          type: 'LOCATION',
+          replyToId: dto.replyToId,
+          deliveredAt,
+          location: { create: { latitude: dto.latitude, longitude: dto.longitude } },
+        },
+        include: MESSAGE_INCLUDE,
+      }),
+      this.prisma.conversation.update({
+        where: { id: dto.conversationId },
+        data: { updatedAt: new Date() },
+      }),
+    ]);
+
+    this.events.emitToUsers(recipients, 'message:new', toMessageDto(message, this.cloudinary));
+
+    await Promise.all(
+      recipients.map((recipientId) =>
+        this.notifications.create(recipientId, 'NEW_MESSAGE', {
+          conversationId: dto.conversationId,
+          messageId: message.id,
+          senderId: userId,
+          preview: '📍 Position',
+        }),
+      ),
+    );
+
+    return toMessageDto(message, this.cloudinary);
+  }
+
+  /**
+   * Sticker (gros emoji, voir MessageType.STICKER) — même charpente que
+   * sendLocation ci-dessus, rien à uploader ni valider au-delà de la forme
+   * déjà vérifiée par SendStickerMessageDto.
+   */
+  async sendSticker(userId: string, dto: SendStickerMessageDto): Promise<MessageDto> {
+    await this.assertMembership(userId, dto.conversationId);
+
+    if (dto.replyToId) {
+      const replyTarget = await this.prisma.message.findUnique({ where: { id: dto.replyToId } });
+      if (!replyTarget || replyTarget.conversationId !== dto.conversationId) {
+        throw new BadRequestException(
+          'Le message auquel vous répondez est introuvable dans cette conversation.',
+        );
+      }
+    }
+
+    const recipients = await this.otherMemberIds(dto.conversationId, userId);
+    const deliveredAt = recipients.some((id) => this.presence.isOnline(id)) ? new Date() : null;
+
+    const [message] = await this.prisma.$transaction([
+      this.prisma.message.create({
+        data: {
+          conversationId: dto.conversationId,
+          senderId: userId,
+          type: 'STICKER',
+          text: dto.emoji,
+          replyToId: dto.replyToId,
+          deliveredAt,
+        },
+        include: MESSAGE_INCLUDE,
+      }),
+      this.prisma.conversation.update({
+        where: { id: dto.conversationId },
+        data: { updatedAt: new Date() },
+      }),
+    ]);
+
+    this.events.emitToUsers(recipients, 'message:new', toMessageDto(message, this.cloudinary));
+
+    await Promise.all(
+      recipients.map((recipientId) =>
+        this.notifications.create(recipientId, 'NEW_MESSAGE', {
+          conversationId: dto.conversationId,
+          messageId: message.id,
+          senderId: userId,
+          preview: `${dto.emoji} Sticker`,
+        }),
+      ),
+    );
+
+    return toMessageDto(message, this.cloudinary);
   }
 
   /** Streame une pièce jointe — réservé aux membres actifs de la conversation du message parent (section 23). */

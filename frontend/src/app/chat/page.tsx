@@ -72,6 +72,7 @@ function toCallMessage(payload: CallMessagePayload): Message {
     readAt: null,
     createdAt: payload.createdAt,
     reactions: [],
+    location: null,
     mentions: [],
     mentionsEveryone: false,
     call: payload.call,
@@ -433,9 +434,19 @@ function ChatPageInner() {
     });
   }
 
-  async function sendContactShare(userId: string) {
+  async function sendLocation(latitude: number, longitude: number, replyToId?: string) {
     if (!selected) return;
-    const msg = await api.contacts.share(selected.id, userId);
+    const msg = await api.messages.sendLocation({ conversationId: selected.id, latitude, longitude, replyToId });
+    setMessages((prev) => [...prev, msg]);
+    patchConversation(selected.id, {
+      lastMessage: toLastMessage(msg),
+      updatedAt: msg.sentAt,
+    });
+  }
+
+  async function sendSticker(emoji: string, replyToId?: string) {
+    if (!selected) return;
+    const msg = await api.messages.sendSticker({ conversationId: selected.id, emoji, replyToId });
     setMessages((prev) => [...prev, msg]);
     patchConversation(selected.id, {
       lastMessage: toLastMessage(msg),
@@ -850,7 +861,8 @@ function ChatPageInner() {
           onSend={sendMessage}
           onSendVoice={sendVoiceMessage}
           onSendMedia={sendMediaMessage}
-          onSendContact={sendContactShare}
+          onSendSticker={sendSticker}
+          onSendLocation={sendLocation}
           onDeleteVoice={(id) => void deleteVoiceMessage(id)}
           infoOpen={infoOpen}
           onToggleInfo={() => setInfoOpen((v) => !v)}

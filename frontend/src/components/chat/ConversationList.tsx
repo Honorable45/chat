@@ -89,6 +89,9 @@ function preview(conversation: Conversation, myUserId: string): string {
   }
   if (last.type === "CALL") return callPreview(last, myUserId);
   if (last.type === "CONTACT_SHARE") return `${prefix}👤 Contact partagé`;
+  if (last.type === "LOCATION") return `${prefix}📍 Position`;
+  // STICKER : `last.text` porte déjà directement l'emoji (voir Message.text
+  // côté backend, aucun champ dédié) — le retour générique ci-dessous suffit.
   return `${prefix}${last.text ?? ""}`;
 }
 

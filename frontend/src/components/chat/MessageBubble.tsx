@@ -3,11 +3,12 @@
 import { useEffect, useState } from "react";
 import { AuthenticatedImage } from "@/components/AuthenticatedImage";
 import { Avatar } from "@/components/Avatar";
-import { CheckCheckIcon, CheckIcon, ExpandIcon, FlagIcon, PersonIcon, PhoneIcon, PlusIcon, RefreshIcon, ReplyIcon, VideoIcon } from "@/components/icons";
+import { CheckCheckIcon, CheckIcon, ExpandIcon, FlagIcon, MapPinIcon, PersonIcon, PhoneIcon, PlusIcon, RefreshIcon, ReplyIcon, VideoIcon } from "@/components/icons";
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { ReportModal } from "@/components/ReportModal";
 import { api, ApiError } from "@/lib/api";
 import { displayName, quotedMessagePreview, timeOfDay } from "@/lib/format";
+import { osmLocationUrl } from "@/lib/osm-tile";
 import type {
   CallDetail,
   ContactStatus,
@@ -16,6 +17,7 @@ import type {
   Message,
   PublicUser,
 } from "@/lib/types";
+import { LocationPreview } from "./LocationPreview";
 import { MediaAlbumGrid } from "./MediaAlbumGrid";
 import { ReactionPicker } from "./ReactionPicker";
 import { SwipeToReply } from "./SwipeToReply";
@@ -404,6 +406,24 @@ export function MessageBubble({
               Contact...
             </div>
           )
+        ) : message.type === "LOCATION" && message.location ? (
+          <a
+            href={osmLocationUrl(message.location.latitude, message.location.longitude)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block w-56 overflow-hidden rounded-2xl border border-border bg-surface-raised transition hover:opacity-90"
+          >
+            <LocationPreview latitude={message.location.latitude} longitude={message.location.longitude} height={140} />
+            <p className="flex items-center gap-1.5 px-3 py-2 text-xs text-muted">
+              <MapPinIcon size={13} />
+              Position partagée
+            </p>
+          </a>
+        ) : message.type === "STICKER" ? (
+          // Aucun fond de bulle (comme WhatsApp) : le sticker (gros emoji, voir
+          // MessageType.STICKER côté backend) est déjà visuellement complet en
+          // lui-même.
+          <p className="text-6xl leading-none">{message.text}</p>
         ) : (
           <div
             className={`rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap ${

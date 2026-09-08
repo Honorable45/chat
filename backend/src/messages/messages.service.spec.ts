@@ -220,6 +220,94 @@ describe('MessagesService', () => {
     });
   });
 
+  describe('sendLocation', () => {
+    it("refuse d'envoyer dans une conversation dont on n'est pas membre", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.sendLocation('user-1', {
+          conversationId: 'conv-1',
+          latitude: 48.8566,
+          longitude: 2.3522,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('refuse une réponse à un message situé dans une autre conversation', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.message.findUnique.mockResolvedValue(
+        buildMessage({ id: 'msg-autre', conversationId: 'conv-2' }),
+      );
+
+      await expect(
+        service.sendLocation('user-1', {
+          conversationId: 'conv-1',
+          latitude: 48.8566,
+          longitude: 2.3522,
+          replyToId: 'msg-autre',
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('crée le message LOCATION avec les coordonnées, fait remonter la conversation et notifie', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      const created = {
+        ...buildMessage({ type: 'LOCATION', text: null }),
+        reads: [],
+        location: { latitude: 48.8566, longitude: 2.3522 },
+      };
+      prisma.$transaction.mockResolvedValue([created, {}]);
+
+      const result = await service.sendLocation('user-1', {
+        conversationId: 'conv-1',
+        latitude: 48.8566,
+        longitude: 2.3522,
+      });
+
+      expect(result.location).toEqual({ latitude: 48.8566, longitude: 2.3522 });
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2'],
+        'message:new',
+        expect.objectContaining({ id: created.id }),
+      );
+      expect(notifications.create).toHaveBeenCalledWith(
+        'user-2',
+        'NEW_MESSAGE',
+        expect.objectContaining({ preview: '📍 Position' }),
+      );
+    });
+  });
+
+  describe('sendSticker', () => {
+    it("refuse d'envoyer dans une conversation dont on n'est pas membre", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.sendSticker('user-1', { conversationId: 'conv-1', emoji: '😂' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("crée le message STICKER avec l'emoji dans `text`, fait remonter la conversation et notifie", async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      const created = { ...buildMessage({ type: 'STICKER', text: '😂' }), reads: [] };
+      prisma.$transaction.mockResolvedValue([created, {}]);
+
+      const result = await service.sendSticker('user-1', { conversationId: 'conv-1', emoji: '😂' });
+
+      expect(result.type).toBe('STICKER');
+      expect(result.text).toBe('😂');
+      expect(notifications.create).toHaveBeenCalledWith(
+        'user-2',
+        'NEW_MESSAGE',
+        expect.objectContaining({ preview: '😂 Sticker' }),
+      );
+    });
+  });
+
   describe('sendImage', () => {
     it("refuse si aucun fichier n'est fourni", async () => {
       await expect(

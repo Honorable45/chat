@@ -370,6 +370,9 @@ export class ContactsService {
       mentionsEveryone: false,
       attachments: [],
       sharedContact: sharedProfile,
+      // Même raison que reactions/mentions ci-dessus : le frontend
+      // (Message.location) attend toujours ce champ, même null.
+      location: null,
       createdAt: message.createdAt,
     };
   }

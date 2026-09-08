@@ -60,6 +60,7 @@ model User {
   groupInvitesCreated     GroupInvite[]        @relation("GroupInviteCreatedBy")
   mentions                MessageMention[]
   pushSubscriptions       PushSubscription[]
+  favoriteStickers        FavoriteSticker[]
 
   isActive   Boolean   @default(true)
   // Jamais modifiable depuis un endpoint self-service (section admin) :
@@ -359,6 +360,7 @@ model Message {
   reads         MessageRead[]
   call          Call?
   sharedContact SharedContact?
+  location      LocationMessage?
 
   editedAt  DateTime?
   deletedAt DateTime?
@@ -391,6 +393,15 @@ enum MessageType {
   // Uniquement les informations publiques (mêmes champs que PublicUserDto),
   // jamais l'email/téléphone/préférences privées du contact partagé.
   CONTACT_SHARE
+  // Position ponctuelle partagée dans une conversation — voir LocationMessage.
+  // Une seule capture au moment de l'envoi, jamais mise à jour ensuite
+  // (pas de "position en direct" — hors périmètre de cette passe).
+  LOCATION
+  // Un gros emoji envoyé comme bulle à part entière (jamais du texte
+  // classique) — voir Message.text, qui porte directement le caractère
+  // emoji : aucun modèle dédié, contrairement à LOCATION/CONTACT_SHARE,
+  // le contenu tient dans le champ déjà existant.
+  STICKER
   // Événement de groupe automatique (ajout/retrait/départ/promotion/
   // renommage...) — voir Message.systemAction/systemTargetUserId.
   SYSTEM
@@ -731,6 +742,38 @@ model SharedContact {
   createdAt DateTime @default(now())
 
   @@map("shared_contacts")
+}
+
+// Position ponctuelle partagée dans un message (type LOCATION) — une seule
+// capture au moment de l'envoi (voir le commentaire sur MessageType.LOCATION),
+// jamais mise à jour ensuite.
+model LocationMessage {
+  id        String  @id @default(cuid())
+  messageId String  @unique
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  latitude  Float
+  longitude Float
+
+  createdAt DateTime @default(now())
+
+  @@map("location_messages")
+}
+
+// Sticker (gros emoji, voir MessageType.STICKER) ajouté aux favoris d'un
+// utilisateur — jamais partagé entre utilisateurs, purement une préférence
+// personnelle qui pilote l'ordre d'affichage dans le sélecteur (voir
+// StickersService/StickerPicker.tsx).
+model FavoriteSticker {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emoji  String
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, emoji])
+  @@map("favorite_stickers")
 }
 
 // ---------------------------------------------------------------------------

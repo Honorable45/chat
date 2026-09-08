@@ -30,6 +30,8 @@ export function quotedMessagePreview(m: {
       return "📞 Appel";
     case "CONTACT_SHARE":
       return "👤 Contact partagé";
+    case "LOCATION":
+      return "📍 Position";
     case "SYSTEM":
       return "Message système";
     default:
