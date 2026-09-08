@@ -6,26 +6,36 @@ import { api, ApiError } from "@/lib/api";
 import { shortRelativeTime } from "@/lib/format";
 import type { AppNotification } from "@/lib/types";
 
+/**
+ * `actorName` est gravé une fois pour toutes dans le payload par
+ * NotificationsService.create() côté backend (miroir de buildPushText,
+ * même raison : figé au moment de l'envoi, jamais résolu à la volée ici) —
+ * absent pour une notification créée avant ce changement, ou pour un type
+ * sans acteur identifiable (TRANSLATION_COMPLETED, ADDED_TO_GROUP...) :
+ * on retombe alors sur le texte générique d'avant.
+ */
 function describe(n: AppNotification): string {
+  const actorName = n.payload?.actorName;
+  const preview = n.payload?.preview ? String(n.payload.preview) : null;
   switch (n.type) {
     case "NEW_MESSAGE":
-      return n.payload?.preview ? String(n.payload.preview) : "Nouveau message";
+      return actorName ? `${actorName} : ${preview ?? "nouveau message"}` : (preview ?? "Nouveau message");
     case "NEW_VOICE_MESSAGE":
-      return "🎤 Nouveau message vocal";
+      return actorName ? `${actorName} : 🎤 message vocal` : "🎤 Nouveau message vocal";
     case "INCOMING_CALL":
       return "📞 Appel entrant";
     case "MISSED_CALL":
-      return "📞 Appel manqué";
+      return actorName ? `📞 Appel manqué de ${actorName}` : "📞 Appel manqué";
     case "TRANSLATION_COMPLETED":
       return "Traduction terminée";
     case "CONTACT_REQUEST":
-      return "Nouvelle demande de contact";
+      return actorName ? `${actorName} souhaite vous ajouter en contact` : "Nouvelle demande de contact";
     case "REACTION":
-      return "Nouvelle réaction à votre message";
+      return actorName ? `${actorName} a réagi à votre message` : "Nouvelle réaction à votre message";
     case "CONTACT_ACCEPTED":
-      return "Votre demande de contact a été acceptée";
+      return actorName ? `${actorName} a accepté votre demande de contact` : "Votre demande de contact a été acceptée";
     case "MENTION":
-      return "Vous avez été mentionné(e) dans un groupe";
+      return actorName ? `${actorName} vous a mentionné(e) dans un groupe` : "Vous avez été mentionné(e) dans un groupe";
     case "ADDED_TO_GROUP":
       return "Vous avez été ajouté(e) à un groupe";
     case "REMOVED_FROM_GROUP":

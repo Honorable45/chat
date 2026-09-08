@@ -37,6 +37,23 @@ function decorativeBars(seed: string, count = 28): number[] {
  * seul messageId (ancien code) 404ait pour tout vocal stocké sur Cloudinary,
  * le stream `/voice/:id/audio` ne servant plus que les fichiers LOCAL.
  */
+/**
+ * Cloudinary n'a pas de resource_type "audio" dédié (voir
+ * CloudinaryProvider.upload, appelé avec 'video' même pour un vocal) : il
+ * sert donc ce fichier avec un Content-Type "video/webm" même s'il ne
+ * contient qu'une piste audio. Un `new Audio()` construit à partir d'un blob
+ * ainsi typé "video/..." peut être refusé selon le navigateur, alors qu'un
+ * vocal LOCAL (servi avec son vrai type "audio/...", voir
+ * VoiceController.streamAudio) n'a jamais ce problème — bug réel constaté en
+ * prod, uniquement pour les vocaux migrés vers Cloudinary. On reconstruit le
+ * blob avec le même sous-type (webm/mp4/ogg...), juste recatégorisé "audio/".
+ */
+function normalizeAudioBlob(blob: Blob): Blob {
+  return blob.type.startsWith("video/")
+    ? new Blob([blob], { type: blob.type.replace(/^video\//, "audio/") })
+    : blob;
+}
+
 async function fetchAsBlob(audioUrl: string): Promise<Blob | null> {
   const needsAuth = isOwnBackendUrl(audioUrl);
   const token = needsAuth ? getAccessToken() : null;
@@ -44,7 +61,7 @@ async function fetchAsBlob(audioUrl: string): Promise<Blob | null> {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   }).catch(() => null);
   if (!res?.ok) return null;
-  return res.blob();
+  return normalizeAudioBlob(await res.blob());
 }
 
 function TranslatedAudioButton({ audioUrl }: { audioUrl: string }) {
@@ -184,7 +201,7 @@ export function VoiceMessageBubble({
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     });
     if (!res.ok) throw new Error("Audio introuvable.");
-    const blob = await res.blob();
+    const blob = normalizeAudioBlob(await res.blob());
     const url = URL.createObjectURL(blob);
     if (source === "translated") translatedUrlRef.current = url;
     else originalUrlRef.current = url;

@@ -397,6 +397,8 @@ export interface AppNotification {
     messageId?: string;
     senderId?: string;
     preview?: string;
+    /** Nom de l'auteur de l'action, gravé une fois pour toutes par NotificationsService.create() — absent pour les types sans acteur identifiable (TRANSLATION_COMPLETED, ADDED_TO_GROUP...). */
+    actorName?: string;
     [key: string]: unknown;
   } | null;
   readAt: string | null;

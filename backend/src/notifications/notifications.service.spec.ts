@@ -52,6 +52,7 @@ describe('NotificationsService', () => {
       updateMany: jest.Mock;
       count: jest.Mock;
     };
+    user: { findUnique: jest.Mock };
   };
   let events: { emitToUser: jest.Mock };
   let presence: { isViewingConversation: jest.Mock };
@@ -69,6 +70,7 @@ describe('NotificationsService', () => {
         updateMany: jest.fn(),
         count: jest.fn(),
       },
+      user: { findUnique: jest.fn().mockResolvedValue(null) },
     };
     events = { emitToUser: jest.fn() };
     presence = { isViewingConversation: jest.fn().mockReturnValue(false) };
@@ -122,6 +124,52 @@ describe('NotificationsService', () => {
         body: 'Salut !',
         url: '/chat?c=conv-1',
       });
+    });
+
+    it("résout et grave le nom de l'expéditeur dans le payload stocké, utilisé comme titre du push", async () => {
+      prisma.user.findUnique.mockResolvedValue({ firstName: 'Ada', lastName: 'Lovelace' });
+      prisma.notification.create.mockResolvedValue(
+        buildNotification({
+          payload: { conversationId: 'conv-1', preview: 'Salut !', senderId: 'ada-id', actorName: 'Ada Lovelace' },
+        }),
+      );
+
+      await service.create('user-1', 'NEW_MESSAGE', {
+        conversationId: 'conv-1',
+        preview: 'Salut !',
+        senderId: 'ada-id',
+      });
+
+      expect(prisma.user.findUnique).toHaveBeenCalledWith({
+        where: { id: 'ada-id' },
+        select: { firstName: true, lastName: true },
+      });
+      expect(prisma.notification.create).toHaveBeenCalledWith({
+        data: {
+          userId: 'user-1',
+          type: 'NEW_MESSAGE',
+          payload: { conversationId: 'conv-1', preview: 'Salut !', senderId: 'ada-id', actorName: 'Ada Lovelace' },
+        },
+      });
+      expect(push.sendToUser).toHaveBeenCalledWith('user-1', {
+        title: 'Ada Lovelace',
+        body: 'Salut !',
+        url: '/chat?c=conv-1',
+      });
+    });
+
+    it("garde le titre générique si l'utilisateur désigné par le champ acteur n'existe plus", async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+      prisma.notification.create.mockResolvedValue(
+        buildNotification({ payload: { conversationId: 'conv-1', senderId: 'deleted-user' } }),
+      );
+
+      await service.create('user-1', 'NEW_MESSAGE', { conversationId: 'conv-1', senderId: 'deleted-user' });
+
+      expect(push.sendToUser).toHaveBeenCalledWith(
+        'user-1',
+        expect.objectContaining({ title: 'Glotta' }),
+      );
     });
 
     it("n'envoie jamais de push pour INCOMING_CALL (sonnerie temps réel distincte)", async () => {

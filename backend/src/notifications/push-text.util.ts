@@ -14,19 +14,22 @@ function str(value: unknown): string | null {
  * miroir de describe() dans frontend/src/components/chat/NotificationsPanel.tsx
  * (étendu avec les cas qui y manquaient : MENTION/ADDED_TO_GROUP/
  * REMOVED_FROM_GROUP/PROMOTED_ADMIN/CONTACT_ACCEPTED), pour rester cohérent
- * entre notification in-app et notification système. Volontairement sans
- * résolution de nom d'acteur : le payload ne contient que des IDs, jamais un
- * nom déjà résolu (même limite que describe(), qui n'en affiche pas non
- * plus aujourd'hui) — résoudre un nom ici demanderait une requête
- * supplémentaire pour chaque notification, hors du périmètre de cette passe.
+ * entre notification in-app et notification système.
+ *
+ * `payload.actorName` est déjà résolu et gravé dans le payload stocké par
+ * NotificationsService.create() (voir ACTOR_FIELD_BY_TYPE) — jamais résolu
+ * ici : une fonction pure ne doit pas dépendre de Prisma, et une notification
+ * système déjà livrée ne pourrait de toute façon plus aller chercher un nom
+ * a posteriori. Absent pour les types sans acteur identifiable
+ * (TRANSLATION_COMPLETED, ADDED_TO_GROUP...) : titre générique dans ce cas.
  */
 export function buildPushText(type: NotificationType, payload: Record<string, unknown>): PushText {
-  const title = 'Glotta';
+  const title = str(payload.actorName) ?? 'Glotta';
   switch (type) {
     case 'NEW_MESSAGE':
       return { title, body: str(payload.preview) ?? 'Nouveau message' };
     case 'NEW_VOICE_MESSAGE':
-      return { title, body: '🎤 Nouveau message vocal' };
+      return { title, body: '🎤 Message vocal' };
     case 'INCOMING_CALL':
       return { title, body: '📞 Appel entrant' };
     case 'MISSED_CALL':
@@ -34,13 +37,13 @@ export function buildPushText(type: NotificationType, payload: Record<string, un
     case 'TRANSLATION_COMPLETED':
       return { title, body: 'Traduction terminée' };
     case 'CONTACT_REQUEST':
-      return { title, body: 'Nouvelle demande de contact' };
+      return { title, body: 'Souhaite vous ajouter en contact' };
     case 'CONTACT_ACCEPTED':
-      return { title, body: 'Votre demande de contact a été acceptée' };
+      return { title, body: 'A accepté votre demande de contact' };
     case 'REACTION':
-      return { title, body: 'Nouvelle réaction à votre message' };
+      return { title, body: 'A réagi à votre message' };
     case 'MENTION':
-      return { title, body: 'Vous avez été mentionné(e) dans un groupe' };
+      return { title, body: 'Vous a mentionné(e) dans un groupe' };
     case 'ADDED_TO_GROUP':
       return { title, body: 'Vous avez été ajouté(e) à un groupe' };
     case 'REMOVED_FROM_GROUP':

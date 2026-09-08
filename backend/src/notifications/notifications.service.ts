@@ -31,6 +31,21 @@ const SUPPRESSIBLE_WHEN_VIEWING_TYPES: ReadonlySet<NotificationType> = new Set([
   'MENTION',
 ]);
 
+// Champ du payload qui porte l'identité de "qui a fait l'action", par type —
+// jamais uniforme d'un appelant à l'autre (senderId pour un message, actorId
+// pour une mention, userId pour une réaction/un contact...). Types absents
+// de cette table (TRANSLATION_COMPLETED, ADDED_TO_GROUP...) : pas d'acteur
+// identifiable, le titre générique "Glotta" reste utilisé (voir buildPushText).
+const ACTOR_FIELD_BY_TYPE: Partial<Record<NotificationType, string>> = {
+  NEW_MESSAGE: 'senderId',
+  NEW_VOICE_MESSAGE: 'senderId',
+  MENTION: 'actorId',
+  REACTION: 'userId',
+  CONTACT_REQUEST: 'userId',
+  CONTACT_ACCEPTED: 'userId',
+  MISSED_CALL: 'callerId',
+};
+
 function toNotificationDto(notification: Notification) {
   return {
     id: notification.id,
@@ -78,8 +93,10 @@ export class NotificationsService {
       return null;
     }
 
+    const enrichedPayload = await this.withActorName(type, payload);
+
     const notification = await this.prisma.notification.create({
-      data: { userId, type, payload },
+      data: { userId, type, payload: enrichedPayload },
     });
 
     const dto = toNotificationDto(notification);
@@ -91,12 +108,40 @@ export class NotificationsService {
     // déjà best-effort en interne.
     if (!PUSH_EXCLUDED_TYPES.has(type)) {
       void this.push.sendToUser(userId, {
-        ...buildPushText(type, payload),
-        url: buildPushUrl(payload),
+        ...buildPushText(type, enrichedPayload),
+        url: buildPushUrl(enrichedPayload),
       });
     }
 
     return dto;
+  }
+
+  /**
+   * Résout et grave le nom de "qui a fait l'action" directement dans le
+   * payload stocké (voir ACTOR_FIELD_BY_TYPE) — jamais résolu à la volée au
+   * moment de l'affichage : une notification push déjà livrée à un appareil
+   * ne peut plus aller chercher un nom après coup, et geler le nom au moment
+   * de l'envoi (plutôt que de résoudre l'ID à chaque lecture) évite aussi un
+   * aller-retour réseau supplémentaire à chaque ouverture du panneau
+   * Notifications. Comme un pseudo Twitter, le nom affiché reste celui
+   * d'alors même si l'auteur change ensuite le sien — comportement attendu
+   * pour un historique, pas un bug.
+   */
+  private async withActorName(
+    type: NotificationType,
+    payload: Prisma.InputJsonObject,
+  ): Promise<Prisma.InputJsonObject> {
+    const field = ACTOR_FIELD_BY_TYPE[type];
+    const actorId = field ? payload[field] : undefined;
+    if (typeof actorId !== 'string') return payload;
+
+    const actor = await this.prisma.user.findUnique({
+      where: { id: actorId },
+      select: { firstName: true, lastName: true },
+    });
+    if (!actor) return payload;
+
+    return { ...payload, actorName: `${actor.firstName} ${actor.lastName}`.trim() };
   }
 
   async list(userId: string, cursor?: string, limit = DEFAULT_PAGE_SIZE) {
