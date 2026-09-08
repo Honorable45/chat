@@ -103,9 +103,15 @@ function extractErrorMessage(body: unknown, fallback: string): string {
 let refreshInFlight: Promise<boolean> | null = null;
 
 /** Un seul refresh à la fois même si plusieurs requêtes échouent en 401 en
- * même temps (ex. plusieurs appels lancés au montage de la page) — sans quoi
- * chacune tenterait de rafraîchir le token pour son propre compte. */
-async function refreshSession(): Promise<boolean> {
+ * même temps (ex. plusieurs appels lancés au montage de la page), ou que
+ * REST et sockets (voir socket.ts/use-call.ts, qui l'appellent aussi sur
+ * `connect_error`) en réclament un simultanément — sans quoi chacun
+ * tenterait de rafraîchir le token pour son propre compte. Exportée : les
+ * connexions Socket.IO n'ont pas d'équivalent au 401 REST pour détecter un
+ * access token expiré, seulement `connect_error` avec le message renvoyé
+ * par verifySocketUserId ("jwt expired").
+ */
+export async function refreshSession(): Promise<boolean> {
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
       const refreshToken = getRefreshToken();
