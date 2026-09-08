@@ -91,7 +91,13 @@ function PushNotificationsRow() {
       setSubscription(sub);
       setState("subscribed");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Impossible d'activer les notifications push.");
+      // Affiche toujours le message réel (y compris une DOMException du
+      // navigateur, ex. "Registration failed - push service error" côté
+      // pushManager.subscribe) plutôt qu'un message générique qui masquait
+      // la vraie cause — nécessaire pour diagnostiquer un échec silencieux
+      // constaté en prod (bug réel : le bouton semblait s'activer sans
+      // qu'aucun abonnement n'arrive jamais côté serveur).
+      setError(err instanceof Error ? err.message : "Impossible d'activer les notifications push.");
     } finally {
       setBusy(false);
     }
@@ -108,7 +114,7 @@ function PushNotificationsRow() {
       setSubscription(null);
       setState("unsubscribed");
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Impossible de désactiver les notifications push.");
+      setError(err instanceof Error ? err.message : "Impossible de désactiver les notifications push.");
     } finally {
       setBusy(false);
     }
