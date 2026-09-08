@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { io, type Socket } from "socket.io-client";
-import { refreshSession } from "./api";
+import { handleUnauthorized, refreshSession } from "./api";
 import { getAccessToken } from "./token-store";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "http://localhost:4000";
@@ -34,15 +34,23 @@ export function useSocket(enabled: boolean): Socket | null {
       transports: ["websocket"],
     });
 
-    // Le serveur rejette avec "jwt expired"/"invalid signature"... — jamais
-    // un problème réseau ordinaire (celui-là redéclenche son propre
-    // `connect_error` sans faute d'authentification). Tente un rafraîchissement
-    // avant la prochaine tentative automatique de Socket.IO plutôt que
-    // d'attendre qu'une requête REST échoue en 401 pour s'en apercevoir —
-    // sans quoi la messagerie temps réel resterait muette jusqu'au prochain
-    // rechargement complet de la page.
-    instance.on("connect_error", () => {
-      void refreshSession();
+    // Un access token expiré n'est rejeté qu'APRÈS la connexion (voir
+    // EventsGateway.handleConnection côté backend, qui appelle
+    // `client.disconnect(true)` une fois `verifySocketUserId` en échec) —
+    // jamais via `connect_error`, qui ne couvre que les échecs de handshake
+    // réseau. Une déconnexion à l'initiative du serveur produit la raison
+    // "io server disconnect", pour laquelle Socket.IO n'enclenche PAS de
+    // reconnexion automatique par design (même avec `reconnection: true`) —
+    // sans ce handler, la messagerie temps réel resterait muette jusqu'au
+    // prochain rechargement complet de la page (bug réel constaté en prod :
+    // "jwt expired" après un redéploiement backend, qui coupe tous les
+    // sockets ouverts).
+    instance.on("disconnect", (reason) => {
+      if (reason !== "io server disconnect") return;
+      void refreshSession().then((refreshed) => {
+        if (refreshed) instance.connect();
+        else handleUnauthorized();
+      });
     });
 
     // Différé d'un micro-tick : évite un setState synchrone dans le corps de

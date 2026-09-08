@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
-import { api } from "./api";
+import { api, handleUnauthorized, refreshSession } from "./api";
 import { getAccessToken } from "./token-store";
 import type { CallMessagePayload } from "./types";
 import { useRingTone } from "./use-ring-tone";
@@ -149,11 +149,29 @@ export function useCall(enabled: boolean, onCallMessage: (message: CallMessagePa
     if (!token) return;
 
     const socket = io(`${WS_URL}/calls`, {
-      auth: { token },
+      // Fonction (jamais un objet figé) — voir le commentaire équivalent
+      // dans socket.ts : une reconnexion automatique après expiration de
+      // l'access token doit repartir avec le token le plus frais, pas celui
+      // capturé au montage.
+      auth: (cb) => cb({ token: getAccessToken() }),
       reconnection: true,
       transports: ["websocket"],
     });
     socketRef.current = socket;
+
+    // Voir le commentaire équivalent (et plus détaillé) dans socket.ts : un
+    // access token expiré se traduit par un `disconnect` côté client, raison
+    // "io server disconnect" — jamais `connect_error` — pour laquelle
+    // Socket.IO n'enclenche pas de reconnexion automatique. Sans ce handler,
+    // un appel entrant ne sonnerait plus du tout après expiration du token
+    // (15 min), jusqu'au prochain rechargement complet de la page.
+    socket.on("disconnect", (reason) => {
+      if (reason !== "io server disconnect") return;
+      void refreshSession().then((refreshed) => {
+        if (refreshed) socket.connect();
+        else handleUnauthorized();
+      });
+    });
 
     function ensurePeerConnection(iceServers: RTCIceServer[]): RTCPeerConnection {
       if (pcRef.current) return pcRef.current;

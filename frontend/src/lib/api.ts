@@ -100,6 +100,18 @@ function extractErrorMessage(body: unknown, fallback: string): string {
   return fallback;
 }
 
+/** Efface la session et prévient AuthProvider (voir socket.ts/use-call.ts,
+ * qui l'appellent aussi quand une reconnexion Socket.IO échoue après un
+ * rafraîchissement raté) — jamais de `window.location.href` ici (ce module
+ * n'est pas un composant, donc pas de useRouter) : on délègue la navigation
+ * à AuthProvider, seul à détenir le routeur Next, via un événement DOM. */
+export function handleUnauthorized(): void {
+  clearTokens();
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event("glotta:unauthorized"));
+  }
+}
+
 let refreshInFlight: Promise<boolean> | null = null;
 
 /** Un seul refresh à la fois même si plusieurs requêtes échouent en 401 en
@@ -171,13 +183,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     if (refreshed) {
       return request<T>(path, { ...options, _retried: true });
     }
-    clearTokens();
-    // Pas de window.location.href ici (ce module n'est pas un composant, donc
-    // pas de useRouter) : on délègue la navigation à AuthProvider, seul à
-    // détenir le routeur Next, via un événement DOM.
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new Event("glotta:unauthorized"));
-    }
+    handleUnauthorized();
     throw new ApiError("Session expirée.", 401);
   }
 

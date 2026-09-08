@@ -74,7 +74,7 @@ export function SwipeToReply({ onReply, children }: { onReply: () => void; child
     >
       <span
         aria-hidden="true"
-        className="absolute top-1/2 left-0 -translate-y-1/2 text-[var(--accent-2)]"
+        className="pointer-events-none absolute top-1/2 left-0 -translate-y-1/2 text-[var(--accent-2)]"
         style={{ opacity: progress, transform: `translateY(-50%) scale(${0.6 + progress * 0.4})` }}
       >
         <ReplyIcon size={18} />
