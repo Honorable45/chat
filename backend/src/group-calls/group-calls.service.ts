@@ -179,6 +179,88 @@ export class GroupCallsService {
   }
 
   /**
+   * Fait naître un appel de groupe à partir d'un appel 1:1 déjà actif
+   * ("inviter une personne à rejoindre un appel simple", voir
+   * CallsService.escalateToGroup) — seul point d'entrée qui crée un
+   * GroupCall SANS exiger que la conversation soit de type GROUP ni que
+   * l'invité en soit déjà membre : `conversationId` est ici une conversation
+   * DIRECT (l'appel 1:1 d'origine), et l'invité n'y a jamais eu accès. C'est
+   * justement pour ça que la validation d'éligibilité de l'invité (contact
+   * accepté de l'initiateur) est faite en amont, côté CallsService — jamais
+   * ici, qui fait aveuglément confiance à `joinedUserIds`/`inviteeId`.
+   *
+   * `joinedUserIds` (les deux participants de l'appel 1:1 d'origine) entrent
+   * directement JOINED, `joinedAt` = maintenant : ils sont déjà réellement
+   * connectés en pair-à-pair au moment de la bascule, contrairement à
+   * start() où seul l'initiateur est JOINED d'emblée. Voir
+   * useGroupCall.startFromUpgrade côté frontend pour la façon dont ces deux
+   * pairs déjà JOINED établissent leur connexion WebRTC sans passer par la
+   * convention habituelle "celui qui rejoint initie l'offre" (aucun des deux
+   * ne rejoint, à proprement parler).
+   */
+  async startFromEscalation(
+    initiatorId: string,
+    conversationId: string,
+    type: CallType,
+    joinedUserIds: string[],
+    inviteeId: string,
+  ): Promise<GroupCallMessageDto> {
+    const message = await this.prisma.message.create({
+      data: {
+        conversationId,
+        senderId: initiatorId,
+        type: 'GROUP_CALL',
+        groupCall: {
+          create: {
+            conversationId,
+            initiatorId,
+            type,
+            participants: {
+              create: [
+                ...joinedUserIds.map((id) => ({
+                  userId: id,
+                  status: 'JOINED' as const,
+                  joinedAt: new Date(),
+                })),
+                { userId: inviteeId, status: 'RINGING' as const },
+              ],
+            },
+          },
+        },
+      },
+      include: { groupCall: { include: GROUP_CALL_INCLUDE } },
+    });
+    await this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: { updatedAt: new Date() },
+    });
+
+    const call = message.groupCall;
+    if (!call) {
+      // Ne devrait jamais arriver : la création imbriquée ci-dessus garantit toujours un GroupCall associé.
+      throw new NotFoundException('Appel de groupe introuvable après création.');
+    }
+
+    // Pas de push système ici (voir le commentaire de classe) : même
+    // limitation assumée que start()/invite() pour cette première passe.
+    await this.notifications.create(inviteeId, 'INCOMING_CALL', {
+      conversationId,
+      messageId: message.id,
+      groupCallId: call.id,
+      callerId: initiatorId,
+    });
+
+    return this.toMessageDto(
+      message.id,
+      conversationId,
+      initiatorId,
+      message.sentAt,
+      message.createdAt,
+      call,
+    );
+  }
+
+  /**
    * Ajoute des participants à un appel de groupe déjà en cours ("ajouter
    * quelqu'un à l'appel") — seul un participant déjà JOINED peut inviter,
    * jamais quelqu'un qui n'a fait qu'être invité (RINGING) ou qui a refusé/

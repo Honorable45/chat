@@ -287,6 +287,18 @@ export class GroupCallsGateway implements OnGatewayConnection, OnGatewayDisconne
       .emit(event, { groupCallId: body.groupCallId, senderUserId: userId, data: body.data });
   }
 
+  /**
+   * Sonne un participant fraîchement invité à un appel de groupe créé par
+   * CallsGateway.handleEscalate (bascule d'un appel 1:1) — appelée
+   * directement depuis l'autre gateway, jamais via un socket émetteur de ce
+   * namespace-ci (même principe que CallsGateway.notifyRejected). Réutilise
+   * l'événement 'group-call:incoming' existant tel quel : rien à distinguer
+   * côté frontend, useGroupCall le traite déjà exactement comme voulu ici.
+   */
+  notifyIncoming(message: GroupCallMessageDto, recipientId: string): void {
+    this.server.to(this.userRoom(recipientId)).emit('group-call:incoming', message);
+  }
+
   private broadcastToParticipants(call: GroupCallDto, event: string, payload: unknown): void {
     for (const p of call.participants) {
       this.server.to(this.userRoom(p.userId)).emit(event, payload);

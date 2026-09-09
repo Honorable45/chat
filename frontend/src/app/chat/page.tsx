@@ -34,6 +34,7 @@ import type {
   GroupCallMessagePayload,
   Message,
   MessageTranslationDetail,
+  PublicUser,
 } from "@/lib/types";
 import type { VoiceRecording } from "@/lib/use-voice-recorder";
 
@@ -640,7 +641,10 @@ function ChatPageInner() {
     [refreshConversations],
   );
 
-  const call = useCall(Boolean(user), applyCallMessage);
+  const call = useCall(Boolean(user), applyCallMessage, (groupCallMessage) => {
+    applyGroupCallMessage(groupCallMessage);
+    void groupCall.startFromUpgrade(groupCallMessage, user!.id);
+  });
 
   // État d'affichage pur (aucun lien avec useCall/WebRTC) — permet de réduire
   // l'appel en cours en une pastille flottante pour continuer à écrire des
@@ -744,6 +748,36 @@ function ChatPageInner() {
     callConversation?.otherParticipant ??
     (call.otherUserId ? conversations.flatMap((c) => c.members).find((m) => m.id === call.otherUserId) : null) ??
     null;
+
+  // "Inviter une personne à rejoindre l'appel" pour un appel simple (voir
+  // CallOverlay.onEscalate) — candidats = contacts acceptés de l'utilisateur,
+  // jamais les membres de la conversation DIRECT en cours (elle n'en a que
+  // deux) : chargés à la demande, une seule fois par appel actif, plutôt que
+  // tenus à jour globalement comme ContactsPanel (pas besoin ici).
+  const [callContacts, setCallContacts] = useState<PublicUser[]>([]);
+  useEffect(() => {
+    if (call.phase !== "active") return;
+    let cancelled = false;
+    api.contacts
+      .list()
+      .then((list) => {
+        if (!cancelled) setCallContacts(list);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [call.phase]);
+  const callEscalateCandidates = callContacts.filter(
+    (c) => c.id !== user?.id && c.id !== callPeer?.id,
+  );
+
+  async function handleEscalateCall(inviteeId: string) {
+    const result = await call.escalate(inviteeId);
+    if (!result) return;
+    applyGroupCallMessage(result);
+    void groupCall.startFromUpgrade(result, user!.id);
+  }
 
   const groupCallConversation = conversations.find((c) => c.id === groupCall.conversationId) ?? null;
   // Membres du groupe ni RINGING ni JOINED dans l'appel en cours — jamais
@@ -1067,6 +1101,8 @@ function ChatPageInner() {
           onToggleMute={call.toggleMute}
           onToggleVideo={() => void call.toggleVideo()}
           onMinimize={() => setCallMinimized(true)}
+          onEscalate={(inviteeId) => void handleEscalateCall(inviteeId)}
+          escalateCandidates={callEscalateCandidates}
         />
       )}
 

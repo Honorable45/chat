@@ -45,7 +45,12 @@ function buildCall(overrides: Record<string, unknown> = {}) {
 describe('GroupCallsService', () => {
   let prisma: {
     conversation: { findUnique: jest.Mock; update: jest.Mock };
-    groupCall: { findFirst: jest.Mock; findUnique: jest.Mock; findMany: jest.Mock; update: jest.Mock };
+    groupCall: {
+      findFirst: jest.Mock;
+      findUnique: jest.Mock;
+      findMany: jest.Mock;
+      update: jest.Mock;
+    };
     groupCallParticipant: { upsert: jest.Mock; update: jest.Mock };
     message: { create: jest.Mock; findUnique: jest.Mock; findUniqueOrThrow: jest.Mock };
     conversationMember: { findUnique: jest.Mock };
@@ -56,7 +61,12 @@ describe('GroupCallsService', () => {
   beforeEach(() => {
     prisma = {
       conversation: { findUnique: jest.fn(), update: jest.fn() },
-      groupCall: { findFirst: jest.fn(), findUnique: jest.fn(), findMany: jest.fn(), update: jest.fn() },
+      groupCall: {
+        findFirst: jest.fn(),
+        findUnique: jest.fn(),
+        findMany: jest.fn(),
+        update: jest.fn(),
+      },
       groupCallParticipant: { upsert: jest.fn(), update: jest.fn() },
       message: { create: jest.fn(), findUnique: jest.fn(), findUniqueOrThrow: jest.fn() },
       conversationMember: { findUnique: jest.fn() },
@@ -77,12 +87,16 @@ describe('GroupCallsService', () => {
 
     it("refuse pour une conversation DIRECT (jamais d'appel de groupe hors GROUP)", async () => {
       prisma.conversation.findUnique.mockResolvedValue({ ...conversation, type: 'DIRECT' });
-      await expect(service.start('alice', 'conv-1', 'AUDIO')).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.start('alice', 'conv-1', 'AUDIO')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
 
     it("refuse si l'appelant n'est pas membre", async () => {
       prisma.conversation.findUnique.mockResolvedValue(conversation);
-      await expect(service.start('mallory', 'conv-1', 'AUDIO')).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.start('mallory', 'conv-1', 'AUDIO')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
 
     it('crée le message GROUP_CALL, invite tous les autres membres en RINGING, et notifie chacun', async () => {
@@ -121,8 +135,16 @@ describe('GroupCallsService', () => {
         }),
       );
       expect(notifications.create).toHaveBeenCalledWith('bob', 'INCOMING_CALL', expect.any(Object));
-      expect(notifications.create).toHaveBeenCalledWith('carol', 'INCOMING_CALL', expect.any(Object));
-      expect(notifications.create).not.toHaveBeenCalledWith('alice', expect.anything(), expect.anything());
+      expect(notifications.create).toHaveBeenCalledWith(
+        'carol',
+        'INCOMING_CALL',
+        expect.any(Object),
+      );
+      expect(notifications.create).not.toHaveBeenCalledWith(
+        'alice',
+        expect.anything(),
+        expect.anything(),
+      );
       expect(result.groupCall.participants).toHaveLength(3);
     });
 
@@ -152,15 +174,81 @@ describe('GroupCallsService', () => {
     });
   });
 
+  describe('startFromEscalation', () => {
+    it("crée le message GROUP_CALL avec les deux participants d'origine déjà JOINED et l'invité en RINGING, sans vérifier ni le type ni le membership de la conversation", async () => {
+      prisma.message.create.mockResolvedValue({
+        ...MESSAGE_STUB,
+        groupCall: buildCall({
+          participants: [
+            buildParticipantRow({ userId: 'alice', status: 'JOINED' }),
+            buildParticipantRow({ userId: 'bob', status: 'JOINED' }),
+            buildParticipantRow({ userId: 'carol', status: 'RINGING' }),
+          ],
+        }),
+      });
+
+      const result = await service.startFromEscalation(
+        'alice',
+        'conv-1',
+        'AUDIO',
+        ['alice', 'bob'],
+        'carol',
+      );
+
+      expect(prisma.conversation.findUnique).not.toHaveBeenCalled();
+      expect(prisma.message.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            conversationId: 'conv-1',
+            senderId: 'alice',
+            type: 'GROUP_CALL',
+            groupCall: {
+              create: expect.objectContaining({
+                initiatorId: 'alice',
+                participants: {
+                  create: [
+                    { userId: 'alice', status: 'JOINED', joinedAt: expect.any(Date) },
+                    { userId: 'bob', status: 'JOINED', joinedAt: expect.any(Date) },
+                    { userId: 'carol', status: 'RINGING' },
+                  ],
+                },
+              }),
+            },
+          }),
+        }),
+      );
+      expect(notifications.create).toHaveBeenCalledWith(
+        'carol',
+        'INCOMING_CALL',
+        expect.any(Object),
+      );
+      expect(notifications.create).not.toHaveBeenCalledWith(
+        'alice',
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(notifications.create).not.toHaveBeenCalledWith(
+        'bob',
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(result.groupCall.participants).toHaveLength(3);
+    });
+  });
+
   describe('invite', () => {
     it("refuse si l'appelant n'est pas lui-même JOINED", async () => {
       prisma.groupCall.findUnique.mockResolvedValue(buildCall());
-      await expect(service.invite('bob', 'call-1', ['carol'])).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(service.invite('bob', 'call-1', ['carol'])).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
     });
 
     it("refuse si l'appel n'est plus actif", async () => {
       prisma.groupCall.findUnique.mockResolvedValue(buildCall({ status: 'ENDED' }));
-      await expect(service.invite('alice', 'call-1', ['carol'])).rejects.toBeInstanceOf(ConflictException);
+      await expect(service.invite('alice', 'call-1', ['carol'])).rejects.toBeInstanceOf(
+        ConflictException,
+      );
     });
 
     it('invite les nouveaux membres en RINGING et notifie chacun, ignore les membres déjà JOINED', async () => {
@@ -178,8 +266,16 @@ describe('GroupCallsService', () => {
           where: { groupCallId_userId: { groupCallId: 'call-1', userId: 'carol' } },
         }),
       );
-      expect(notifications.create).toHaveBeenCalledWith('carol', 'INCOMING_CALL', expect.any(Object));
-      expect(notifications.create).not.toHaveBeenCalledWith('alice', expect.anything(), expect.anything());
+      expect(notifications.create).toHaveBeenCalledWith(
+        'carol',
+        'INCOMING_CALL',
+        expect.any(Object),
+      );
+      expect(notifications.create).not.toHaveBeenCalledWith(
+        'alice',
+        expect.anything(),
+        expect.anything(),
+      );
     });
   });
 
@@ -190,16 +286,14 @@ describe('GroupCallsService', () => {
     });
 
     it('passe le participant à JOINED et renvoie les autres userId déjà JOINED', async () => {
-      prisma.groupCall.findUnique
-        .mockResolvedValueOnce(buildCall())
-        .mockResolvedValueOnce(
-          buildCall({
-            participants: [
-              buildParticipantRow({ userId: 'alice', status: 'JOINED' }),
-              buildParticipantRow({ userId: 'bob', status: 'JOINED' }),
-            ],
-          }),
-        );
+      prisma.groupCall.findUnique.mockResolvedValueOnce(buildCall()).mockResolvedValueOnce(
+        buildCall({
+          participants: [
+            buildParticipantRow({ userId: 'alice', status: 'JOINED' }),
+            buildParticipantRow({ userId: 'bob', status: 'JOINED' }),
+          ],
+        }),
+      );
 
       const result = await service.join('bob', 'call-1');
 
@@ -217,7 +311,9 @@ describe('GroupCallsService', () => {
     it('passe le participant à DECLINED', async () => {
       prisma.groupCall.findUnique
         .mockResolvedValueOnce(buildCall())
-        .mockResolvedValueOnce(buildCall({ participants: [buildParticipantRow({ userId: 'bob', status: 'DECLINED' })] }));
+        .mockResolvedValueOnce(
+          buildCall({ participants: [buildParticipantRow({ userId: 'bob', status: 'DECLINED' })] }),
+        );
 
       await service.decline('bob', 'call-1');
 
@@ -284,13 +380,17 @@ describe('GroupCallsService', () => {
   describe('getByMessageId', () => {
     it('404 si le message ne porte aucun appel de groupe', async () => {
       prisma.message.findUnique.mockResolvedValue({ ...MESSAGE_STUB, groupCall: null });
-      await expect(service.getByMessageId('alice', 'message-1')).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.getByMessageId('alice', 'message-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
 
     it("404 si l'appelant n'est pas membre de la conversation (jamais 403)", async () => {
       prisma.message.findUnique.mockResolvedValue({ ...MESSAGE_STUB, groupCall: buildCall() });
       prisma.conversationMember.findUnique.mockResolvedValue(null);
-      await expect(service.getByMessageId('mallory', 'message-1')).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.getByMessageId('mallory', 'message-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
   });
 

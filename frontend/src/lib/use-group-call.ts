@@ -343,6 +343,61 @@ export function useGroupCall(enabled: boolean, onCallMessage: (message: GroupCal
     [acquireMedia, cleanupMedia, update],
   );
 
+  /**
+   * Entrée dans un appel de groupe né de la bascule d'un appel 1:1 (voir
+   * useCall.escalate/onUpgradedToGroup, CallsService.escalateToGroup) —
+   * jamais de sonnerie ici : les deux parties de l'appel 1:1 d'origine
+   * passent JOINED d'emblée côté serveur (voir
+   * GroupCallsService.startFromEscalation), on entre donc directement en
+   * phase "active", comme si on avait déjà rejoint.
+   *
+   * Aucune des deux parties n'est "celle qui rejoint" au sens de la
+   * convention habituelle du maillage (voir GroupCallsGateway) — les DEUX
+   * appellent startFromUpgrade en même temps (l'une via l'ack de son propre
+   * escalate(), l'autre via l'événement 'call:upgraded'). Départage
+   * déterministe, calculable indépendamment des deux côtés sans aucune
+   * coordination serveur : l'id utilisateur le plus petit (ordre
+   * lexicographique) initie l'offre vers l'autre, qui se contente d'attendre
+   * l'offre entrante (déjà géré par le handler 'group-call:offer' existant,
+   * dès que phase === "active").
+   */
+  const startFromUpgrade = useCallback(
+    async (message: GroupCallMessagePayload, myUserId: string) => {
+      if (stateRef.current.phase !== "idle") return;
+      const kind = message.groupCall.type;
+      try {
+        await acquireMedia(kind);
+      } catch {
+        update({
+          error:
+            kind === "VIDEO"
+              ? "Caméra/micro inaccessibles — vérifiez les autorisations du navigateur."
+              : "Micro inaccessible — vérifiez les autorisations du navigateur.",
+        });
+        return;
+      }
+      answeredAtRef.current = Date.now();
+      update({
+        phase: "active",
+        groupCallId: message.groupCall.id,
+        conversationId: message.conversationId,
+        kind,
+        participants: message.groupCall.participants,
+        videoEnabled: kind === "VIDEO",
+        durationSeconds: 0,
+      });
+      onCallMessageRef.current(message);
+
+      const otherJoined = message.groupCall.participants
+        .filter((p) => p.status === "JOINED" && p.userId !== myUserId)
+        .map((p) => p.userId);
+      if (otherJoined.length > 0 && myUserId < otherJoined[0]) {
+        void connectToPeersRef.current(otherJoined);
+      }
+    },
+    [acquireMedia, update],
+  );
+
   const join = useCallback(async () => {
     const socket = socketRef.current;
     const { groupCallId, kind, phase } = stateRef.current;
@@ -438,6 +493,7 @@ export function useGroupCall(enabled: boolean, onCallMessage: (message: GroupCal
     remoteStreams,
     localVideoStream,
     start,
+    startFromUpgrade,
     join,
     joinById,
     decline,

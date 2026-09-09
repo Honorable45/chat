@@ -12,5 +12,11 @@ import { GroupCallsService } from './group-calls.service';
   imports: [AuthModule, JwtModule.register({}), NotificationsModule],
   controllers: [GroupCallsController],
   providers: [GroupCallsService, GroupCallsGateway],
+  // GroupCallsService/GroupCallsGateway exportés pour CallsModule : voir
+  // CallsService.escalateToGroup / CallsGateway.handleEscalate, qui font
+  // basculer un appel 1:1 en appel de groupe (section "inviter quelqu'un
+  // dans un appel simple") — dépendance à sens unique (CallsModule →
+  // GroupCallsModule), jamais l'inverse, donc aucun cycle à résoudre.
+  exports: [GroupCallsService, GroupCallsGateway],
 })
 export class GroupCallsModule {}

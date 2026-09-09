@@ -12,6 +12,8 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import type { DefaultEventsMap, Server, Socket } from 'socket.io';
+import { GroupCallsGateway } from '../group-calls/group-calls.gateway';
+import { GroupCallMessageDto } from '../group-calls/group-calls.service';
 import { SocketRateLimiter } from '../websocket/socket-rate-limiter';
 import { verifySocketUserId } from '../websocket/socket-auth.util';
 import { CallMessageDto, CallsService } from './calls.service';
@@ -24,6 +26,9 @@ interface InvitePayload {
 }
 interface CallIdPayload {
   callId: string;
+}
+interface EscalatePayload extends CallIdPayload {
+  inviteeId: string;
 }
 /** SDP offer/answer ou candidat ICE — contenu opaque pour le backend, relayé
  * tel quel à l'autre participant sans être interprété (voir relaySignal). */
@@ -88,6 +93,7 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly calls: CallsService,
+    private readonly groupCallsGateway: GroupCallsGateway,
   ) {}
 
   async handleConnection(client: AppSocket): Promise<void> {
@@ -228,6 +234,43 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         result.call.callerId === userId ? result.call.calleeId : result.call.callerId;
       this.server.to(this.userRoom(otherUserId)).emit('call:ended', result);
       return { ok: true, callMessage: result };
+    } catch (error) {
+      return this.toAckError(error);
+    }
+  }
+
+  /**
+   * "Inviter une personne à rejoindre l'appel" pour un appel simple (1:1) —
+   * bascule vers un appel de groupe (voir CallsService.escalateToGroup).
+   * Trois diffusions distinctes, chacune vers un namespace/socket différent :
+   * l'ack répond à l'initiateur lui-même (sur "/calls", ce socket-ci) ; l'AUTRE
+   * partie de l'appel 1:1 d'origine reçoit 'call:upgraded' (toujours sur
+   * "/calls" : c'est son useCall qui doit se taire silencieusement, sans le
+   * message "Appel terminé.") ; l'invité reçoit le 'group-call:incoming'
+   * habituel, mais sur "/group-calls" — d'où l'appel à
+   * `groupCallsGateway.notifyIncoming`, cette gateway-ci n'ayant aucun accès
+   * à ce namespace-là.
+   */
+  @SubscribeMessage('call:escalate')
+  async handleEscalate(
+    @ConnectedSocket() client: AppSocket,
+    @MessageBody() body: EscalatePayload,
+  ): Promise<AckResult<{ groupCallMessage: GroupCallMessageDto }>> {
+    const userId = client.data.userId;
+    if (!userId) return { ok: false, error: 'Non authentifié.' };
+    if (!this.actionLimiter.consume(client.id)) return this.rateLimited();
+    try {
+      const { otherPartyId, groupCall } = await this.calls.escalateToGroup(
+        userId,
+        body.callId,
+        body.inviteeId,
+      );
+      this.server.to(this.userRoom(otherPartyId)).emit('call:upgraded', {
+        endedCallId: body.callId,
+        groupCallMessage: groupCall,
+      });
+      this.groupCallsGateway.notifyIncoming(groupCall, body.inviteeId);
+      return { ok: true, groupCallMessage: groupCall };
     } catch (error) {
       return this.toAckError(error);
     }

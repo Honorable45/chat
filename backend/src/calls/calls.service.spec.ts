@@ -2,6 +2,8 @@ import { ConflictException, ForbiddenException, NotFoundException } from '@nestj
 import type { ConfigService } from '@nestjs/config';
 import type { JwtService } from '@nestjs/jwt';
 import type { Call } from '@prisma/client';
+import { ContactsService } from '../contacts/contacts.service';
+import { GroupCallsService } from '../group-calls/group-calls.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { PushProvider } from '../push/push.provider';
@@ -46,6 +48,8 @@ describe('CallsService', () => {
   let jwt: { signAsync: jest.Mock; verifyAsync: jest.Mock };
   let config: { getOrThrow: jest.Mock };
   let push: { sendCallInvite: jest.Mock };
+  let contacts: { areContacts: jest.Mock };
+  let groupCalls: { startFromEscalation: jest.Mock };
   let service: CallsService;
 
   beforeEach(() => {
@@ -62,12 +66,16 @@ describe('CallsService', () => {
     };
     config = { getOrThrow: jest.fn().mockReturnValue('call-action-secret') };
     push = { sendCallInvite: jest.fn().mockResolvedValue(undefined) };
+    contacts = { areContacts: jest.fn().mockResolvedValue(true) };
+    groupCalls = { startFromEscalation: jest.fn() };
     service = new CallsService(
       prisma as unknown as PrismaService,
       notifications as unknown as NotificationsService,
       jwt as unknown as JwtService,
       config as unknown as ConfigService,
       push as unknown as PushProvider,
+      contacts as unknown as ContactsService,
+      groupCalls as unknown as GroupCallsService,
     );
   });
 
@@ -305,6 +313,69 @@ describe('CallsService', () => {
       const result = await service.end('bob', 'call-1');
 
       expect(result.call.durationSeconds).toBe(135);
+    });
+  });
+
+  describe('escalateToGroup', () => {
+    it("refuse si l'utilisateur ne participe pas à l'appel", async () => {
+      prisma.call.findUnique.mockResolvedValue(buildCall({ status: 'ACTIVE' }));
+      await expect(service.escalateToGroup('mallory', 'call-1', 'carol')).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+    });
+
+    it("refuse si l'appel n'est pas en cours", async () => {
+      prisma.call.findUnique.mockResolvedValue(buildCall({ status: 'RINGING' }));
+      await expect(service.escalateToGroup('alice', 'call-1', 'carol')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+    });
+
+    it("refuse d'inviter un participant déjà dans l'appel", async () => {
+      prisma.call.findUnique.mockResolvedValue(buildCall({ status: 'ACTIVE' }));
+      await expect(service.escalateToGroup('alice', 'call-1', 'bob')).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(contacts.areContacts).not.toHaveBeenCalled();
+    });
+
+    it("refuse d'inviter quelqu'un qui n'est pas un contact accepté", async () => {
+      prisma.call.findUnique.mockResolvedValue(buildCall({ status: 'ACTIVE' }));
+      contacts.areContacts.mockResolvedValue(false);
+
+      await expect(service.escalateToGroup('alice', 'call-1', 'carol')).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(prisma.call.update).not.toHaveBeenCalled();
+    });
+
+    it("termine l'appel 1:1 et délègue la création du groupe avec les deux participants d'origine déjà JOINED", async () => {
+      prisma.call.findUnique.mockResolvedValue(buildCall({ status: 'ACTIVE' }));
+      prisma.call.update.mockResolvedValue({
+        ...buildCall({ status: 'ENDED' }),
+        message: { conversationId: 'conv-1' },
+      });
+      const groupCallMessage = { id: 'message-2', groupCall: { id: 'group-1' } };
+      groupCalls.startFromEscalation.mockResolvedValue(groupCallMessage);
+
+      const result = await service.escalateToGroup('alice', 'call-1', 'carol');
+
+      expect(prisma.call.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'call-1' },
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.any(Date) est typé `any`, assert de test uniquement.
+          data: { status: 'ENDED', endedAt: expect.any(Date) },
+        }),
+      );
+      expect(groupCalls.startFromEscalation).toHaveBeenCalledWith(
+        'alice',
+        'conv-1',
+        'AUDIO',
+        ['alice', 'bob'],
+        'carol',
+      );
+      expect(result.otherPartyId).toBe('bob');
+      expect(result.groupCall).toEqual(groupCallMessage);
     });
   });
 

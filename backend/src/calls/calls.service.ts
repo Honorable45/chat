@@ -7,6 +7,8 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Call, CallStatus, CallType, Prisma } from '@prisma/client';
+import { ContactsService } from '../contacts/contacts.service';
+import { GroupCallMessageDto, GroupCallsService } from '../group-calls/group-calls.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { PushProvider } from '../push/push.provider';
@@ -124,6 +126,8 @@ export class CallsService {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly push: PushProvider,
+    private readonly contacts: ContactsService,
+    private readonly groupCalls: GroupCallsService,
   ) {}
 
   /**
@@ -295,6 +299,67 @@ export class CallsService {
       },
     });
     return this.fromUpdated(updated);
+  }
+
+  /**
+   * Bascule un appel 1:1 ACTIVE en appel de groupe pour y inviter une
+   * troisième personne ("appels simples : pouvoir inviter quelqu'un à
+   * rejoindre l'appel") — les deux systèmes d'appel (1:1 et groupe) restent
+   * volontairement séparés (voir le commentaire de classe de
+   * GroupCallsService), donc pas de généralisation de Call en GroupCall à N=2 :
+   * on transforme ponctuellement l'un en l'autre au moment de l'invitation,
+   * jamais avant.
+   *
+   * L'appel 1:1 d'origine passe ENDED (pas DECLINED/MISSED : il s'est bien
+   * déroulé, il ne fait que continuer sous une autre forme) — le nouveau
+   * message GROUP_CALL apparaît juste après dans le même fil.
+   *
+   * L'invité doit être un contact accepté de l'initiateur : ni lui ni
+   * l'autre partie de l'appel 1:1 ne sont membres de cette conversation
+   * DIRECT (section 23, 404-jamais-403 — mais ici il ne s'agit même pas
+   * d'appartenance à vérifier, l'invité n'a simplement aucun lien avec cette
+   * conversation avant d'y être explicitement invité), donc aucune
+   * vérification de membership ne serait pertinente ; le contact accepté est
+   * la seule frontière de confiance qui a du sens ici.
+   */
+  async escalateToGroup(
+    userId: string,
+    callId: string,
+    inviteeId: string,
+  ): Promise<{ otherPartyId: string; groupCall: GroupCallMessageDto }> {
+    const call = await this.requireCall(callId);
+    if (call.callerId !== userId && call.calleeId !== userId) {
+      throw new ForbiddenException('Vous ne participez pas à cet appel.');
+    }
+    if (call.status !== 'ACTIVE') {
+      throw new ConflictException("Cet appel n'est plus en cours.");
+    }
+    const otherPartyId = call.callerId === userId ? call.calleeId : call.callerId;
+    if (inviteeId === userId || inviteeId === otherPartyId) {
+      throw new ForbiddenException('Cette personne participe déjà à cet appel.');
+    }
+    const isContact = await this.contacts.areContacts(userId, inviteeId);
+    if (!isContact) {
+      throw new ForbiddenException('Seuls vos contacts peuvent être invités à rejoindre un appel.');
+    }
+
+    const updated = await this.prisma.call.update({
+      where: { id: callId },
+      data: { status: 'ENDED', endedAt: new Date() },
+      include: {
+        message: { select: { conversationId: true } },
+      },
+    });
+
+    const groupCall = await this.groupCalls.startFromEscalation(
+      userId,
+      updated.message.conversationId,
+      updated.type,
+      [call.callerId, call.calleeId],
+      inviteeId,
+    );
+
+    return { otherPartyId, groupCall };
   }
 
   /**

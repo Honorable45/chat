@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { AuthModule } from '../auth/auth.module';
+import { ContactsModule } from '../contacts/contacts.module';
+import { GroupCallsModule } from '../group-calls/group-calls.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PushModule } from '../push/push.module';
 import { CallsController } from './calls.controller';
@@ -16,11 +18,19 @@ import { CallsService } from './calls.service';
   // NotificationsModule, qui l'importe déjà) : CallsService a besoin de
   // PushProvider.sendCallInvite, une méthode dédiée hors du chemin générique
   // de NotificationsService — voir le commentaire sur PUSH_EXCLUDED_TYPES.
+  // ContactsModule : CallsService.escalateToGroup vérifie que l'invité d'un
+  // appel simple devenu appel de groupe est bien un contact accepté de
+  // l'appelant (aucun des deux ne fait partie de la conversation DIRECT
+  // d'origine, donc aucune vérification de membership n'a de sens ici).
+  // GroupCallsModule : dépendance à sens unique, jamais l'inverse (voir le
+  // commentaire d'export dans group-calls.module.ts) — aucun cycle.
   imports: [
     AuthModule, // JwtAuthGuard pour CallsController
     JwtModule.register({}), // vérification des tokens WebSocket + jetons d'action d'appel, secret passé explicitement (voir CallsGateway/CallsService)
     NotificationsModule,
     PushModule,
+    ContactsModule,
+    GroupCallsModule,
   ],
   controllers: [CallsController],
   providers: [CallsService, CallsGateway],

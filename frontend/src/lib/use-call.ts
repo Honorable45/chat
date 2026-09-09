@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 import { api, handleUnauthorized, refreshSession } from "./api";
 import { getAccessToken } from "./token-store";
-import type { CallMessagePayload } from "./types";
+import type { CallMessagePayload, GroupCallMessagePayload } from "./types";
 import { useRingTone } from "./use-ring-tone";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "http://localhost:4000";
@@ -60,6 +60,7 @@ interface AckResult {
   error?: string;
   busy?: boolean;
   callMessage?: CallMessagePayload;
+  groupCallMessage?: GroupCallMessagePayload;
 }
 
 function ack(socket: Socket, event: string, payload: unknown): Promise<AckResult> {
@@ -87,7 +88,19 @@ function ack(socket: Socket, event: string, payload: unknown): Promise<AckResult
  * authoritative — à charge de l'appelant (chat/page.tsx) de mettre à jour le
  * fil de la conversation concernée et sa prévisualisation dans la liste.
  */
-export function useCall(enabled: boolean, onCallMessage: (message: CallMessagePayload) => void) {
+export function useCall(
+  enabled: boolean,
+  onCallMessage: (message: CallMessagePayload) => void,
+  /**
+   * Appelé quand CE 1:1 a été basculé en appel de groupe par l'AUTRE partie
+   * (voir escalate() ci-dessous pour le cas où c'est nous qui l'avons
+   * demandé — l'ack suffit alors, jamais besoin de cet événement pour
+   * nous-même) — reçu via 'call:upgraded' sur le namespace "/calls". À
+   * charge de l'appelant (chat/page.tsx) d'enchaîner avec
+   * useGroupCall.startFromUpgrade.
+   */
+  onUpgradedToGroup?: (message: GroupCallMessagePayload) => void,
+) {
   const [state, setState] = useState<CallSnapshot>(IDLE_SNAPSHOT);
   const stateRef = useRef(state);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -97,6 +110,7 @@ export function useCall(enabled: boolean, onCallMessage: (message: CallMessagePa
   const localStreamRef = useRef<MediaStream | null>(null);
   const answeredAtRef = useRef<number | null>(null);
   const onCallMessageRef = useRef(onCallMessage);
+  const onUpgradedToGroupRef = useRef(onUpgradedToGroup);
   const ensurePeerConnectionRef = useRef<(iceServers: RTCIceServer[]) => RTCPeerConnection>(null!);
   const renegotiateRef = useRef<() => void>(() => {});
 
@@ -106,6 +120,9 @@ export function useCall(enabled: boolean, onCallMessage: (message: CallMessagePa
   useEffect(() => {
     onCallMessageRef.current = onCallMessage;
   }, [onCallMessage]);
+  useEffect(() => {
+    onUpgradedToGroupRef.current = onUpgradedToGroup;
+  }, [onUpgradedToGroup]);
 
   const update = useCallback((patch: Partial<CallSnapshot>) => {
     stateRef.current = { ...stateRef.current, ...patch };
@@ -319,6 +336,21 @@ export function useCall(enabled: boolean, onCallMessage: (message: CallMessagePa
       );
     });
 
+    // L'AUTRE partie de notre appel 1:1 vient d'inviter une troisième
+    // personne (voir CallsGateway.handleEscalate) — jamais un vrai
+    // raccroché : on se tait silencieusement (aucun message "Appel
+    // terminé.", contrairement à endWithFeedback) et on laisse
+    // chat/page.tsx enchaîner avec useGroupCall.startFromUpgrade.
+    socket.on(
+      "call:upgraded",
+      (payload: { endedCallId: string; groupCallMessage: GroupCallMessagePayload }) => {
+        if (stateRef.current.callId !== payload.endedCallId) return;
+        cleanupMedia();
+        update(IDLE_SNAPSHOT);
+        onUpgradedToGroupRef.current?.(payload.groupCallMessage);
+      },
+    );
+
     // Expose ensurePeerConnection au reste du hook via une réf de fonction :
     // évite de dupliquer la création du RTCPeerConnection dans start()/accept().
     ensurePeerConnectionRef.current = ensurePeerConnection;
@@ -499,6 +531,31 @@ export function useCall(enabled: boolean, onCallMessage: (message: CallMessagePa
     reset();
   }, [reset]);
 
+  /**
+   * "Inviter une personne à rejoindre l'appel" pour un appel simple —
+   * bascule cet appel 1:1 en appel de groupe (voir
+   * CallsService.escalateToGroup) : on renvoie ici directement le
+   * GroupCallMessageDto reçu dans l'ack, à charge de l'appelant
+   * (chat/page.tsx) d'enchaîner avec useGroupCall.startFromUpgrade — jamais
+   * besoin d'attendre 'call:upgraded', réservé à l'AUTRE partie de l'appel.
+   */
+  const escalate = useCallback(
+    async (inviteeId: string) => {
+      const socket = socketRef.current;
+      const { callId, phase } = stateRef.current;
+      if (!socket || !callId || phase !== "active") return null;
+      const res = await ack(socket, "call:escalate", { callId, inviteeId });
+      if (!res.ok || !res.groupCallMessage) {
+        update({ error: res.error ?? "Impossible d'ajouter cette personne à l'appel." });
+        return null;
+      }
+      cleanupMedia();
+      update(IDLE_SNAPSHOT);
+      return res.groupCallMessage;
+    },
+    [cleanupMedia, update],
+  );
+
   const toggleMute = useCallback(() => {
     const tracks = localStreamRef.current?.getAudioTracks() ?? [];
     const nextMuted = !stateRef.current.muted;
@@ -573,6 +630,7 @@ export function useCall(enabled: boolean, onCallMessage: (message: CallMessagePa
     resumeIncoming,
     reject,
     hangUp,
+    escalate,
     toggleMute,
     toggleVideo,
   };

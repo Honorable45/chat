@@ -1,11 +1,11 @@
 "use client";
 
-import type { RefObject } from "react";
+import { useState, type RefObject } from "react";
 import { Avatar } from "@/components/Avatar";
-import { ChevronDownIcon, MicIcon, MicOffIcon, PhoneIcon, PhoneOffIcon, VideoIcon, VideoOffIcon } from "@/components/icons";
+import { ChevronDownIcon, MicIcon, MicOffIcon, PersonIcon, PhoneIcon, PhoneOffIcon, VideoIcon, VideoOffIcon } from "@/components/icons";
 import { displayName } from "@/lib/format";
 import type { CallKind, CallPhase } from "@/lib/use-call";
-import type { ConversationParticipant } from "@/lib/types";
+import type { ConversationParticipant, PublicUser } from "@/lib/types";
 
 // Exportées pour MinimizedCallBar.tsx — jamais dupliquées, même format de
 // durée/statut affiché réduit ou en plein écran.
@@ -61,6 +61,8 @@ export function CallOverlay({
   onToggleMute,
   onToggleVideo,
   onMinimize,
+  onEscalate,
+  escalateCandidates,
 }: {
   phase: CallPhase;
   kind: CallKind;
@@ -81,7 +83,14 @@ export function CallOverlay({
    * jamais proposé en phase "incoming" : répondre/refuser doit rester la
    * seule action possible tant que l'appel n'a pas été décidé. */
   onMinimize: () => void;
+  /** "Inviter une personne à rejoindre l'appel" (appel simple → appel de
+   * groupe, voir useCall.escalate) — absent tant qu'aucun contact n'a pu
+   * être chargé (voir chat/page.tsx), jamais proposé hors de la phase
+   * "active" : inviter suppose une connexion déjà établie. */
+  onEscalate?: (userId: string) => void;
+  escalateCandidates: PublicUser[];
 }) {
+  const [escalateOpen, setEscalateOpen] = useState(false);
   const name = peer ? displayName(peer) : "Appel";
   const showRemoteVideo = phase === "active" && remoteVideoEnabled;
   const showLocalPreview = (phase === "active" || phase === "outgoing") && videoEnabled;
@@ -119,6 +128,30 @@ export function CallOverlay({
       </div>
 
       <div className="relative flex items-center gap-6">
+        {phase === "active" && escalateOpen && onEscalate && (
+          <div className="absolute bottom-full mb-3 w-64 rounded-2xl border border-white/10 bg-surface-raised p-2 text-foreground shadow-2xl">
+            <p className="px-2 py-1.5 text-xs font-medium text-muted">Ajouter à l&rsquo;appel</p>
+            {escalateCandidates.length === 0 && (
+              <p className="px-2 py-3 text-center text-xs text-muted">Aucun contact disponible.</p>
+            )}
+            <div className="max-h-48 overflow-y-auto glotta-scroll-hidden">
+              {escalateCandidates.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => {
+                    onEscalate(c.id);
+                    setEscalateOpen(false);
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface"
+                >
+                  <Avatar firstName={c.firstName} lastName={c.lastName} avatarUrl={c.avatarUrl} size={28} />
+                  <span className="truncate">{displayName(c)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {phase === "incoming" && (
           <>
             <button
@@ -177,6 +210,15 @@ export function CallOverlay({
             >
               {videoEnabled ? <VideoIcon size={22} /> : <VideoOffIcon size={22} />}
             </button>
+            {onEscalate && (
+              <button
+                onClick={() => setEscalateOpen((v) => !v)}
+                aria-label="Ajouter une personne à l'appel"
+                className="flex h-14 w-14 items-center justify-center rounded-full bg-white/15 text-white transition hover:bg-white/25"
+              >
+                <PersonIcon size={22} />
+              </button>
+            )}
             <button
               onClick={onMinimize}
               aria-label="Réduire l'appel"
