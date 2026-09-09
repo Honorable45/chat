@@ -25,6 +25,7 @@ import { AuthenticatedUser } from '../auth/interfaces/jwt-payload.interface';
 import { OverrideVoiceLanguageDto } from '../translations/dto/override-voice-language.dto';
 import { MAX_AUDIO_SIZE_BYTES } from '../uploads/audio-upload.constants';
 import { CreateVoiceMessageDto } from './dto/create-voice-message.dto';
+import { RequestVoiceTranslationDto } from './dto/request-voice-translation.dto';
 import { VoiceService } from './voice.service';
 
 @ApiTags('voice')
@@ -98,6 +99,22 @@ export class VoiceController {
   @HttpCode(HttpStatus.ACCEPTED)
   retranscribe(@CurrentUser() user: AuthenticatedUser, @Param('messageId') messageId: string) {
     return this.voice.retranscribe(user.userId, messageId);
+  }
+
+  /**
+   * Traduit ce vocal vers une langue choisie par le destinataire (jamais
+   * présupposée — section 16). Renvoie le VoiceMessageDto à jour si la
+   * traduction existe déjà, sinon `{ started: true }` (résultat via les
+   * événements temps réel `translation:*`).
+   */
+  @Post(':messageId/translate')
+  @HttpCode(HttpStatus.OK)
+  requestTranslation(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('messageId') messageId: string,
+    @Body() dto: RequestVoiceTranslationDto,
+  ) {
+    return this.voice.requestTranslation(user.userId, messageId, dto.languageCode);
   }
 
   @Patch(':messageId/language')

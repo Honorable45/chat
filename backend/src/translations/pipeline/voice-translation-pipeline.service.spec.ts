@@ -92,14 +92,24 @@ describe('VoiceTranslationPipelineService', () => {
     );
   });
 
+  // Registre de langues résolu par code (jamais une valeur unique) : le
+  // pipeline interroge `language.findUnique` aussi bien pour la langue
+  // détectée par le STT que pour la langue cible demandée.
+  function mockLanguageRegistry() {
+    const byCode: Record<string, { id: string; code: string; enabled: boolean }> = {
+      fr: { id: 'lang-fr', code: 'fr', enabled: true },
+      en: { id: 'lang-en', code: 'en', enabled: true },
+    };
+    prisma.language.findUnique.mockImplementation((args: { where: { code: string } }) =>
+      Promise.resolve(byCode[args.where.code] ?? null),
+    );
+  }
+
   function mockSuccessfulTranslationSetup() {
     speechToText.isConfigured.mockReturnValue(true);
     speechToText.transcribe.mockResolvedValue({ text: 'Bonjour', languageCode: 'fr' });
-    prisma.language.findUnique.mockResolvedValue({ id: 'lang-fr', code: 'fr' });
+    mockLanguageRegistry();
     translation.isConfigured.mockReturnValue(true);
-    prisma.user.findMany.mockResolvedValue([
-      { id: 'user-2', preferredReceiveLanguage: { id: 'lang-en', code: 'en' } },
-    ]);
     translation.translate.mockResolvedValue({ translatedText: 'Hello' });
   }
 
@@ -157,56 +167,67 @@ describe('VoiceTranslationPipelineService', () => {
     expect(prisma.voiceMessage.update).not.toHaveBeenCalled();
   });
 
-  it("n'enchaîne pas sur la traduction si la langue détectée n'est pas reconnue", async () => {
+  it("runInBackground ne traduit jamais d'office (transcription seule à l'envoi)", async () => {
     speechToText.isConfigured.mockReturnValue(true);
-    speechToText.transcribe.mockResolvedValue({ text: 'Bonjour', languageCode: 'zz' });
-    prisma.language.findUnique.mockResolvedValue(null); // "zz" inconnu de notre registre
+    speechToText.transcribe.mockResolvedValue({ text: 'Bonjour', languageCode: 'fr' });
+    mockLanguageRegistry();
     translation.isConfigured.mockReturnValue(true);
 
     service.runInBackground('msg-1');
     await flush();
 
     expect(translation.translate).not.toHaveBeenCalled();
+  });
+
+  it("n'enchaîne pas sur la traduction si la langue détectée n'est pas reconnue", async () => {
+    speechToText.isConfigured.mockReturnValue(true);
+    speechToText.transcribe.mockResolvedValue({ text: 'Bonjour', languageCode: 'zz' });
+    mockLanguageRegistry(); // "zz" inconnu du registre → null
+    translation.isConfigured.mockReturnValue(true);
+
+    service.translateInBackground('msg-1', 'en');
+    await flush();
+
+    expect(translation.translate).not.toHaveBeenCalled();
+    expect(events.emitToUsers).toHaveBeenCalledWith(
+      ['user-1', 'user-2'],
+      'translation:failed',
+      expect.objectContaining({ stage: 'translation', targetLanguageCode: 'en' }),
+    );
   });
 
   it("ne traduit pas si aucun fournisseur de traduction n'est configuré", async () => {
     speechToText.isConfigured.mockReturnValue(true);
     speechToText.transcribe.mockResolvedValue({ text: 'Bonjour', languageCode: 'fr' });
-    prisma.language.findUnique.mockResolvedValue({ id: 'lang-fr', code: 'fr' });
+    mockLanguageRegistry();
     translation.isConfigured.mockReturnValue(false);
 
-    service.runInBackground('msg-1');
+    service.translateInBackground('msg-1', 'en');
     await flush();
 
     expect(translation.translate).not.toHaveBeenCalled();
   });
 
-  it('ne traduit pas vers une langue que le destinataire parle déjà (langue cible = langue source)', async () => {
+  it('ne traduit pas vers la langue déjà parlée dans le vocal (cible = source)', async () => {
     speechToText.isConfigured.mockReturnValue(true);
     speechToText.transcribe.mockResolvedValue({ text: 'Bonjour', languageCode: 'fr' });
-    prisma.language.findUnique.mockResolvedValue({ id: 'lang-fr', code: 'fr' });
+    mockLanguageRegistry();
     translation.isConfigured.mockReturnValue(true);
-    prisma.user.findMany.mockResolvedValue([
-      { id: 'user-2', preferredReceiveLanguage: { id: 'lang-fr', code: 'fr' } },
-    ]);
 
-    service.runInBackground('msg-1');
+    service.translateInBackground('msg-1', 'fr');
     await flush();
 
     expect(translation.translate).not.toHaveBeenCalled();
   });
 
-  it('traduit vers la langue préférée du destinataire et diffuse translation:completed (stage translation)', async () => {
+  it('traduit vers la langue demandée et diffuse translation:completed (stage translation)', async () => {
     speechToText.isConfigured.mockReturnValue(true);
     speechToText.transcribe.mockResolvedValue({ text: 'Bonjour', languageCode: 'fr' });
-    prisma.language.findUnique.mockResolvedValue({ id: 'lang-fr', code: 'fr' });
+    mockLanguageRegistry();
     translation.isConfigured.mockReturnValue(true);
-    prisma.user.findMany.mockResolvedValue([
-      { id: 'user-2', preferredReceiveLanguage: { id: 'lang-en', code: 'en' } },
-    ]);
     translation.translate.mockResolvedValue({ translatedText: 'Hello' });
 
-    service.runInBackground('msg-1');
+    service.translateInBackground('msg-1', 'en');
     await flush();
 
     expect(translation.translate).toHaveBeenCalledWith('Bonjour', 'fr', 'en');
@@ -241,14 +262,11 @@ describe('VoiceTranslationPipelineService', () => {
   it('marque la traduction FAILED et diffuse translation:failed si le fournisseur échoue', async () => {
     speechToText.isConfigured.mockReturnValue(true);
     speechToText.transcribe.mockResolvedValue({ text: 'Bonjour', languageCode: 'fr' });
-    prisma.language.findUnique.mockResolvedValue({ id: 'lang-fr', code: 'fr' });
+    mockLanguageRegistry();
     translation.isConfigured.mockReturnValue(true);
-    prisma.user.findMany.mockResolvedValue([
-      { id: 'user-2', preferredReceiveLanguage: { id: 'lang-en', code: 'en' } },
-    ]);
     translation.translate.mockRejectedValue(new Error('quota dépassé'));
 
-    service.runInBackground('msg-1');
+    service.translateInBackground('msg-1', 'en');
     await flush();
 
     expect(prisma.messageTranslation.update).toHaveBeenCalledWith(
@@ -269,7 +287,7 @@ describe('VoiceTranslationPipelineService', () => {
       mockSuccessfulTranslationSetup();
       textToSpeech.isConfigured.mockReturnValue(false);
 
-      service.runInBackground('msg-1');
+      service.translateInBackground('msg-1', 'en');
       await flush();
 
       expect(textToSpeech.synthesize).not.toHaveBeenCalled();
@@ -281,7 +299,7 @@ describe('VoiceTranslationPipelineService', () => {
       voiceIdentity.resolveVoiceReference.mockResolvedValue(null); // pas de consentement / pas de modèle
       textToSpeech.synthesize.mockResolvedValue({ audio: Buffer.alloc(5), mimeType: 'audio/mpeg' });
 
-      service.runInBackground('msg-1');
+      service.translateInBackground('msg-1', 'en');
       await flush();
 
       expect(voiceIdentity.resolveVoiceReference).toHaveBeenCalledWith('user-1'); // l'expéditeur, pas le destinataire
@@ -300,7 +318,7 @@ describe('VoiceTranslationPipelineService', () => {
       voiceIdentity.resolveVoiceReference.mockResolvedValue({ voiceModelId: 'model-abc' });
       textToSpeech.synthesize.mockResolvedValue({ audio: Buffer.alloc(5), mimeType: 'audio/mpeg' });
 
-      service.runInBackground('msg-1');
+      service.translateInBackground('msg-1', 'en');
       await flush();
 
       expect(textToSpeech.synthesize).toHaveBeenCalledWith('Hello', 'en', {
@@ -328,7 +346,7 @@ describe('VoiceTranslationPipelineService', () => {
       textToSpeech.isConfigured.mockReturnValue(true);
       textToSpeech.synthesize.mockRejectedValue(new Error('fournisseur TTS en panne'));
 
-      service.runInBackground('msg-1');
+      service.translateInBackground('msg-1', 'en');
       await flush();
 
       expect(events.emitToUsers).toHaveBeenCalledWith(
@@ -415,7 +433,7 @@ describe('VoiceTranslationPipelineService', () => {
       textToSpeech.isConfigured.mockReturnValue(true);
       textToSpeech.synthesize.mockResolvedValue({ audio: Buffer.alloc(5), mimeType: 'audio/mpeg' });
 
-      service.runInBackground('msg-1');
+      service.translateInBackground('msg-1', 'en');
       await flush();
 
       expect(cloudinary.upload).toHaveBeenCalledWith(

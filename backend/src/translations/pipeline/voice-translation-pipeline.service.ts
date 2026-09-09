@@ -26,18 +26,32 @@ interface TargetLanguage {
 }
 
 const MESSAGE_WITH_CONVERSATION_INCLUDE = {
-  voiceMessage: true,
+  voiceMessage: { include: { detectedLanguage: true } },
   conversation: { include: { members: { where: { leftAt: null } } } },
 } satisfies Prisma.MessageInclude;
 
+type MessageWithConversation = Prisma.MessageGetPayload<{
+  include: typeof MESSAGE_WITH_CONVERSATION_INCLUDE;
+}>;
+
 /**
- * Orchestre le pipeline complet d'un vocal (section 38 : VoiceMessage →
+ * Orchestre le pipeline d'un vocal (section 38 : VoiceMessage →
  * SpeechToTextService → TranslationService → TextToSpeechService, avec
  * VoiceIdentityService comme garde-fou de consentement avant tout clonage).
- * Toujours déclenché en tâche de fond (`runInBackground`) : le vocal est déjà
+ *
+ * Deux points d'entrée, toujours en tâche de fond (le vocal est déjà
  * entièrement envoyé et utilisable avant même que ce pipeline ne démarre —
  * un échec à n'importe quelle étape ne doit jamais affecter le message
- * original (section 35).
+ * original, section 35) :
+ *
+ * - `runInBackground` : transcription seule, déclenchée à l'envoi. Aucune
+ *   traduction n'est faite d'office — la langue cible n'est jamais
+ *   présupposée à partir des préférences d'un destinataire (section 16 : le
+ *   destinataire choisit lui-même, par vocal, la langue vers laquelle
+ *   traduire).
+ * - `translateInBackground` : traduction + synthèse vers UNE langue précise,
+ *   déclenchée à la demande quand un membre de la conversation la réclame
+ *   (voir VoiceService.requestTranslation). Transcrit d'abord si besoin.
  */
 @Injectable()
 export class VoiceTranslationPipelineService {
@@ -55,7 +69,7 @@ export class VoiceTranslationPipelineService {
   ) {}
 
   runInBackground(messageId: string): void {
-    this.execute(messageId).catch((error: unknown) => {
+    this.executeTranscription(messageId).catch((error: unknown) => {
       this.logger.error(
         `Pipeline de traduction vocale : échec inattendu pour le message ${messageId} : ${
           error instanceof Error ? error.message : String(error)
@@ -64,7 +78,18 @@ export class VoiceTranslationPipelineService {
     });
   }
 
-  private async execute(messageId: string): Promise<void> {
+  /** Traduit (+ synthétise) un vocal déjà envoyé vers UNE langue cible précise, à la demande. */
+  translateInBackground(messageId: string, targetLanguageCode: string): void {
+    this.executeTranslation(messageId, targetLanguageCode).catch((error: unknown) => {
+      this.logger.error(
+        `Pipeline de traduction vocale : échec inattendu pour le message ${messageId} (cible ${targetLanguageCode}) : ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
+  }
+
+  private async executeTranscription(messageId: string): Promise<void> {
     const message = await this.prisma.message.findUnique({
       where: { id: messageId },
       include: MESSAGE_WITH_CONVERSATION_INCLUDE,
@@ -73,16 +98,77 @@ export class VoiceTranslationPipelineService {
 
     const participantIds = message.conversation.members.map((member) => member.userId);
 
-    const transcription = await this.runTranscription(
+    await this.runTranscription(
       messageId,
       message.voiceMessage.audioStorageKey,
       message.voiceMessage.audioStorageProvider,
       message.voiceMessage.audioMimeType,
       participantIds,
     );
-    if (!transcription) return;
+  }
 
-    await this.runTranslations(messageId, message.senderId, transcription, participantIds);
+  private async executeTranslation(messageId: string, targetLanguageCode: string): Promise<void> {
+    const message = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      include: MESSAGE_WITH_CONVERSATION_INCLUDE,
+    });
+    if (!message?.voiceMessage) return;
+
+    if (!this.translation.isConfigured()) return;
+
+    const participantIds = message.conversation.members.map((member) => member.userId);
+
+    const source = await this.resolveSource(message, participantIds);
+    if (!source) {
+      // Sans transcription exploitable (STT indisponible, langue source non
+      // reconnue par le registre...), impossible de traduire : on le signale
+      // à la place d'un silence, l'UI affiche alors "traduction indisponible".
+      this.events.emitToUsers(participantIds, 'translation:failed', {
+        messageId,
+        stage: 'translation',
+        targetLanguageCode,
+      });
+      return;
+    }
+
+    const target = await this.prisma.language.findUnique({ where: { code: targetLanguageCode } });
+    // Cible inconnue/désactivée, ou identique à la langue déjà parlée : rien à
+    // faire (VoiceService a normalement déjà écarté ces cas).
+    if (!target || !target.enabled || target.id === source.languageId) return;
+
+    await this.translateOne(
+      messageId,
+      message.senderId,
+      source,
+      { id: target.id, code: target.code },
+      participantIds,
+    );
+  }
+
+  /**
+   * Transcription source d'une traduction à la demande : réutilise celle déjà
+   * calculée à l'envoi si elle existe (le cas courant), sinon lance le STT
+   * maintenant.
+   */
+  private async resolveSource(
+    message: MessageWithConversation,
+    participantIds: string[],
+  ): Promise<TranscriptionOutcome | null> {
+    const voice = message.voiceMessage!;
+    if (voice.transcript && voice.detectedLanguage) {
+      return {
+        text: voice.transcript,
+        languageId: voice.detectedLanguage.id,
+        languageCode: voice.detectedLanguage.code,
+      };
+    }
+    return this.runTranscription(
+      message.id,
+      voice.audioStorageKey,
+      voice.audioStorageProvider,
+      voice.audioMimeType,
+      participantIds,
+    );
   }
 
   private async runTranscription(
@@ -147,43 +233,6 @@ export class VoiceTranslationPipelineService {
       });
       return null;
     }
-  }
-
-  private async runTranslations(
-    messageId: string,
-    senderId: string,
-    source: TranscriptionOutcome,
-    participantIds: string[],
-  ): Promise<void> {
-    if (!this.translation.isConfigured()) return;
-
-    const recipientIds = participantIds.filter((id) => id !== senderId);
-    if (recipientIds.length === 0) return;
-
-    const targets = await this.resolveTargetLanguages(recipientIds, source.languageId);
-    for (const target of targets) {
-      await this.translateOne(messageId, senderId, source, target, participantIds);
-    }
-  }
-
-  /** Une langue cible par destinataire distinct — inutile de traduire vers la langue déjà parlée. */
-  private async resolveTargetLanguages(
-    recipientIds: string[],
-    sourceLanguageId: string,
-  ): Promise<TargetLanguage[]> {
-    const recipients = await this.prisma.user.findMany({
-      where: { id: { in: recipientIds } },
-      include: { preferredReceiveLanguage: true },
-    });
-
-    const distinct = new Map<string, TargetLanguage>();
-    for (const recipient of recipients) {
-      const lang = recipient.preferredReceiveLanguage;
-      if (lang && lang.id !== sourceLanguageId) {
-        distinct.set(lang.id, { id: lang.id, code: lang.code });
-      }
-    }
-    return [...distinct.values()];
   }
 
   private async translateOne(

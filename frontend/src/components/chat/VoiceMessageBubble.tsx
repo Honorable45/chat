@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { LanguagesIcon, MoreVerticalIcon, PauseIcon, PlayIcon, TrashIcon } from "@/components/icons";
-import { isOwnBackendUrl, resolveMediaSrc } from "@/lib/api";
+import { CheckIcon, LanguagesIcon, MoreVerticalIcon, PauseIcon, PlayIcon, TrashIcon } from "@/components/icons";
+import { api, isOwnBackendUrl, resolveMediaSrc } from "@/lib/api";
 import { formatDuration } from "@/lib/format";
 import { getAccessToken } from "@/lib/token-store";
-import type { VoiceDetails } from "@/lib/types";
+import type { LanguageSummary, VoiceDetails } from "@/lib/types";
 
 // Hauteurs déterministes (par id de message) pour l'habillage visuel des
 // barres — décoratif uniquement, ce n'est jamais présenté comme une vraie
@@ -23,6 +23,53 @@ function decorativeBars(seed: string, count = 28): number[] {
     bars.push(0.25 + (h % 100) / 100);
   }
   return bars;
+}
+
+// Registre des langues chargé une seule fois pour toutes les bulles vocales
+// (GET /languages est public et stable) — évite un aller-retour réseau à
+// chaque ouverture du sélecteur. La dernière langue choisie sert ensuite de
+// suggestion (jamais de traduction automatique : rien n'est traduit tant que
+// l'utilisateur n'a pas explicitement choisi une langue).
+let languagesCache: LanguageSummary[] | null = null;
+let languagesPromise: Promise<LanguageSummary[]> | null = null;
+
+// Dernière langue de traduction choisie — gardée dans localStorage (et non
+// une variable de module, que les règles React interdisent de muter hors
+// rendu) pour servir de suggestion aux prochains vocaux. Purement indicatif :
+// rien n'est jamais traduit tant qu'une langue n'a pas été explicitement
+// choisie (section 16).
+const LAST_LANGUAGE_KEY = "voice.lastTranslationLanguage";
+
+function getSuggestedLanguage(): string | null {
+  try {
+    return localStorage.getItem(LAST_LANGUAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function rememberLanguage(code: string): void {
+  try {
+    localStorage.setItem(LAST_LANGUAGE_KEY, code);
+  } catch {
+    // localStorage indisponible (navigation privée...) : la suggestion est
+    // simplement perdue, jamais bloquante.
+  }
+}
+
+function loadLanguages(): Promise<LanguageSummary[]> {
+  if (languagesCache) return Promise.resolve(languagesCache);
+  languagesPromise ??= api.languages
+    .list()
+    .then((list) => {
+      languagesCache = list;
+      return list;
+    })
+    .catch(() => {
+      languagesPromise = null;
+      return [];
+    });
+  return languagesPromise;
 }
 
 /**
@@ -116,8 +163,10 @@ export function VoiceMessageBubble({
   messageId: string;
   own: boolean;
   voice?: VoiceDetails;
-  /** Langue dans laquelle CE viewer veut recevoir les traductions — sert à
-   * choisir, parmi les traductions disponibles, celle à afficher. */
+  /** Langue de réception préférée de CE viewer — sert uniquement de
+   * suggestion pré-cochée dans le sélecteur, jamais de traduction
+   * automatique : rien n'est traduit tant qu'une langue n'a pas été
+   * explicitement choisie (section 16). */
   myLanguageCode?: string | null;
   onDelete?: (messageId: string) => void;
 }) {
@@ -157,25 +206,40 @@ export function VoiceMessageBubble({
   // pendant le rendu casse sous le compilateur React — react-hooks/refs).
   const bars = useMemo(() => decorativeBars(messageId), [messageId]);
 
+  // Langue vers laquelle CE viewer a demandé la traduction de CE vocal —
+  // `null` tant qu'il n'a rien choisi (aucune traduction affichée). Jamais
+  // pré-remplie : la suggestion (langue préférée / dernière choisie) ne fait
+  // que remonter en tête du sélecteur.
+  const [selectedLang, setSelectedLang] = useState<string | null>(null);
+  const [languages, setLanguages] = useState<LanguageSummary[]>(languagesCache ?? []);
+  const [requesting, setRequesting] = useState(false);
+  const [requestFailed, setRequestFailed] = useState(false);
+  // Suggestion mise en tête du sélecteur : dernière langue choisie
+  // (localStorage, lu une seule fois à l'initialisation), sinon langue
+  // préférée du viewer.
+  const [suggestedCode, setSuggestedCode] = useState<string | null>(
+    () => getSuggestedLanguage() ?? myLanguageCode ?? null,
+  );
+
   useEffect(() => {
     return () => {
       if (originalUrlRef.current) URL.revokeObjectURL(originalUrlRef.current);
       if (translatedUrlRef.current) URL.revokeObjectURL(translatedUrlRef.current);
       // eslint-disable-next-line react-hooks/exhaustive-deps -- ces refs ne pointent jamais un nœud rendu par React (juste un `new Audio(...)` créé à la volée, voir loadSource) : lire `.current` au démontage, plutôt qu'au moment où cet effet s'est déclenché, est justement le comportement voulu.
       originalAudioRef.current?.pause();
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- même raison que ci-dessus.
       translatedAudioRef.current?.pause();
     };
   }, []);
 
   useEffect(() => {
     if (!menuOpen) return;
+    if (languages.length === 0) void loadLanguages().then(setLanguages);
     function onClickOutside(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
     }
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
-  }, [menuOpen]);
+  }, [menuOpen, languages.length]);
 
   /**
    * Charge (une seule fois par piste, voir les refs dédiées) l'audio
@@ -250,11 +314,60 @@ export function VoiceMessageBubble({
     }
   }
 
+  /** Oublie la piste traduite en cache (changement de langue cible) — la prochaine lecture la rechargera depuis la nouvelle URL. */
+  function dropTranslatedTrack() {
+    translatedAudioRef.current?.pause();
+    translatedAudioRef.current = null;
+    if (translatedUrlRef.current) {
+      URL.revokeObjectURL(translatedUrlRef.current);
+      translatedUrlRef.current = null;
+    }
+    if (audioSourceRef.current === "translated") {
+      setAudioSource("original");
+      audioSourceRef.current = "original";
+      setProgress(0);
+      setDuration(voice?.durationSeconds ?? null);
+    }
+  }
+
+  /**
+   * L'utilisateur choisit une langue de traduction pour CE vocal. Rien
+   * n'était traduit d'avance : on demande la traduction au backend
+   * (POST /voice/:id/translate) si elle n'existe pas encore, puis le
+   * résultat arrive via les événements socket "translation:*" (mêmes
+   * events que le pipeline d'envoi — voir chat/page.tsx).
+   */
+  async function pickLanguage(code: string) {
+    setMenuOpen(false);
+    rememberLanguage(code);
+    setSuggestedCode(code);
+    if (code === selectedLang) {
+      setShowTranslation(true);
+      return;
+    }
+    setSelectedLang(code);
+    setShowTranslation(true);
+    setRequestFailed(false);
+    dropTranslatedTrack();
+
+    const existing = voice?.translations.find((t) => t.targetLanguage.code === code);
+    if (existing && existing.status === "COMPLETED") return;
+
+    setRequesting(true);
+    try {
+      await api.voice.requestTranslation(messageId, code);
+    } catch {
+      setRequestFailed(true);
+    } finally {
+      setRequesting(false);
+    }
+  }
+
   /**
    * Bascule la lecture entre l'audio original et sa traduction (voir
-   * relevantTranslation) — remplace l'ancien bouton "Partager" du menu :
-   * lance tout de suite la lecture de la piste choisie, depuis le début (un
-   * second passage par le menu revient à l'original, et ainsi de suite).
+   * relevantTranslation) : lance tout de suite la lecture de la piste
+   * choisie, depuis le début (un second passage par le menu revient à
+   * l'original, et ainsi de suite).
    */
   async function toggleSource() {
     setMenuOpen(false);
@@ -280,27 +393,27 @@ export function VoiceMessageBubble({
 
   const played = duration ? Math.round(progress * bars.length) : 0;
 
-  // La traduction pertinente pour CE viewer : celle vers sa langue de
-  // réception préférée, si elle diffère de la langue détectée (inutile de
-  // traduire vers la langue déjà parlée — même règle que le pipeline
-  // backend, voir VoiceTranslationPipelineService.resolveTargetLanguages).
-  // Sur SON PROPRE message envoyé, "myLanguageCode" ne veut rien dire : je
-  // n'ai jamais besoin d'une traduction vers ma propre langue, celle que je
-  // viens de parler — sans quoi "Écouter/Afficher la traduction" restait
-  // systématiquement désactivé sur ses propres vocaux dès que la langue
-  // détectée correspondait à sa langue de réception (bug réel constaté en
-  // prod). On affiche alors la traduction destinée à l'autre participant à
-  // la place — la seule qui existe déjà en pratique pour une conversation
-  // DIRECT (le pipeline ne traduit jamais vers la langue déjà parlée).
-  const relevantTranslation = own
-    ? voice?.translations.find((t) => t.status === "COMPLETED" && t.audioUrl) ?? voice?.translations[0]
-    : myLanguageCode && voice?.detectedLanguage?.code !== myLanguageCode
-      ? voice?.translations.find((t) => t.targetLanguage.code === myLanguageCode)
-      : undefined;
-  const hasTranslationContent = Boolean(voice?.transcript || relevantTranslation);
+  const detectedCode = voice?.detectedLanguage?.code ?? null;
+  // La traduction affichée : celle vers la langue explicitement choisie par
+  // ce viewer. Rien n'est présupposé — tant que `selectedLang` est nul,
+  // aucune traduction n'apparaît (section 16).
+  const relevantTranslation = selectedLang
+    ? voice?.translations.find((t) => t.targetLanguage.code === selectedLang)
+    : undefined;
   const hasTranslatedAudio = Boolean(
     relevantTranslation?.status === "COMPLETED" && relevantTranslation.audioUrl,
   );
+  // Langues proposées : toutes celles du registre sauf celle déjà parlée
+  // dans le vocal (inutile de « traduire » vers elle-même). Suggestion en
+  // tête : dernière langue choisie, sinon langue préférée du viewer.
+  const pickableLanguages = useMemo(() => {
+    const list = languages.filter((l) => l.code !== detectedCode);
+    return [...list].sort((a, b) => {
+      if (a.code === suggestedCode) return -1;
+      if (b.code === suggestedCode) return 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [languages, detectedCode, suggestedCode]);
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -369,68 +482,108 @@ export function VoiceMessageBubble({
           </button>
 
           {menuOpen && (
-            <div className="absolute top-full right-0 z-10 mt-1 w-52 rounded-xl border border-border bg-surface-raised p-1.5 text-foreground shadow-2xl">
-              <button
-                onClick={() => {
-                  setShowTranslation((v) => !v);
-                  setMenuOpen(false);
-                }}
-                disabled={!hasTranslationContent}
-                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {showTranslation ? "Masquer la traduction" : "Afficher la traduction"}
-              </button>
-              <button
-                onClick={() => void toggleSource()}
-                disabled={!hasTranslatedAudio && audioSource === "original"}
-                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <LanguagesIcon size={15} />
-                {audioSource === "translated" ? "Écouter l'original" : "Écouter la traduction"}
-              </button>
+            <div className="absolute top-full right-0 z-10 mt-1 w-56 rounded-xl border border-border bg-surface-raised p-1.5 text-foreground shadow-2xl">
+              <p className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted">
+                <LanguagesIcon size={13} />
+                Traduire en…
+              </p>
+              <div className="max-h-52 overflow-y-auto">
+                {pickableLanguages.length === 0 ? (
+                  <p className="px-2.5 py-2 text-xs text-muted">Chargement des langues…</p>
+                ) : (
+                  pickableLanguages.map((l) => (
+                    <button
+                      key={l.code}
+                      onClick={() => void pickLanguage(l.code)}
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm transition hover:bg-surface"
+                    >
+                      <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                        {selectedLang === l.code && <CheckIcon size={13} />}
+                      </span>
+                      <span className="flex-1 truncate">{l.nativeName}</span>
+                      {l.code === suggestedCode && selectedLang !== l.code && (
+                        <span className="text-[10px] text-muted">suggéré</span>
+                      )}
+                    </button>
+                  ))
+                )}
+              </div>
+
+              {relevantTranslation && (
+                <>
+                  <div className="my-1 border-t border-border" />
+                  <button
+                    onClick={() => {
+                      setShowTranslation((v) => !v);
+                      setMenuOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface"
+                  >
+                    {showTranslation ? "Masquer la traduction" : "Afficher la traduction"}
+                  </button>
+                  <button
+                    onClick={() => void toggleSource()}
+                    disabled={!hasTranslatedAudio && audioSource === "original"}
+                    className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <LanguagesIcon size={15} />
+                    {audioSource === "translated" ? "Écouter l'original" : "Écouter la traduction"}
+                  </button>
+                </>
+              )}
+
               {own && onDelete && (
-                <button
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onDelete(messageId);
-                  }}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-danger transition hover:bg-danger/10"
-                >
-                  <TrashIcon size={15} />
-                  Supprimer
-                </button>
+                <>
+                  <div className="my-1 border-t border-border" />
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onDelete(messageId);
+                    }}
+                    className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm text-danger transition hover:bg-danger/10"
+                  >
+                    <TrashIcon size={15} />
+                    Supprimer
+                  </button>
+                </>
               )}
             </div>
           )}
         </div>
       </div>
 
-      {showTranslation && voice?.transcript && (
-        <p className={`px-1 text-xs italic ${own ? "text-muted" : "text-muted-strong"}`}>&laquo; {voice.transcript} &raquo;</p>
-      )}
+      {showTranslation && selectedLang && (
+        <div className="flex flex-col gap-1.5">
+          {voice?.transcript && (
+            <p className={`px-1 text-xs italic ${own ? "text-muted" : "text-muted-strong"}`}>
+              &laquo; {voice.transcript} &raquo;
+            </p>
+          )}
 
-      {showTranslation && relevantTranslation?.status === "COMPLETED" && relevantTranslation.translatedText && (
-        <div
-          className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs ${
-            own ? "bg-black/10" : "border border-border bg-surface"
-          }`}
-        >
-          <span className="flex-1">
-            <span className="mr-1.5 rounded bg-current/10 px-1 py-0.5 text-[10px] font-medium uppercase opacity-70">
-              {relevantTranslation.targetLanguage.code}
-            </span>
-            {relevantTranslation.translatedText}
-          </span>
-          {relevantTranslation.audioUrl && <TranslatedAudioButton audioUrl={relevantTranslation.audioUrl} />}
+          {relevantTranslation?.status === "COMPLETED" && relevantTranslation.translatedText && (
+            <div
+              className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs ${
+                own ? "bg-black/10" : "border border-border bg-surface"
+              }`}
+            >
+              <span className="flex-1">
+                <span className="mr-1.5 rounded bg-current/10 px-1 py-0.5 text-[10px] font-medium uppercase opacity-70">
+                  {relevantTranslation.targetLanguage.code}
+                </span>
+                {relevantTranslation.translatedText}
+              </span>
+              {relevantTranslation.audioUrl && <TranslatedAudioButton audioUrl={relevantTranslation.audioUrl} />}
+            </div>
+          )}
+
+          {(requesting || relevantTranslation?.status === "PROCESSING" || relevantTranslation?.status === "PENDING") && (
+            <p className="px-1 text-xs text-muted">Traduction en cours…</p>
+          )}
+
+          {(requestFailed || relevantTranslation?.status === "FAILED") && (
+            <p className="px-1 text-xs text-muted">Traduction indisponible pour l&rsquo;instant.</p>
+          )}
         </div>
-      )}
-
-      {showTranslation && relevantTranslation?.status === "PROCESSING" && (
-        <p className="px-1 text-xs text-muted">Traduction en cours...</p>
-      )}
-
-      {showTranslation && relevantTranslation?.status === "FAILED" && (
-        <p className="px-1 text-xs text-muted">Traduction indisponible pour l&rsquo;instant.</p>
       )}
     </div>
   );

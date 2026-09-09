@@ -11,6 +11,7 @@ import { PresenceService } from '../presence/presence.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { VoiceTranslationPipelineService } from '../translations/pipeline/voice-translation-pipeline.service';
 import { SpeechToTextService } from '../translations/speech-to-text/speech-to-text.service';
+import { TranslationService } from '../translations/translation/translation.service';
 import { CloudinaryProvider } from '../uploads/cloudinary.provider';
 import { StorageService } from '../uploads/storage.service';
 import { EventsGateway } from '../websocket/events.gateway';
@@ -107,8 +108,9 @@ describe('VoiceService', () => {
   let presence: { isOnline: jest.Mock };
   let notifications: { create: jest.Mock };
   let speechToText: { isConfigured: jest.Mock; transcribe: jest.Mock };
+  let translation: { isConfigured: jest.Mock };
   let languages: { findEnabledByCode: jest.Mock };
-  let pipeline: { runInBackground: jest.Mock };
+  let pipeline: { runInBackground: jest.Mock; translateInBackground: jest.Mock };
   let cloudinary: {
     isConfigured: jest.Mock;
     upload: jest.Mock;
@@ -135,8 +137,9 @@ describe('VoiceService', () => {
     presence = { isOnline: jest.fn().mockReturnValue(false) };
     notifications = { create: jest.fn().mockResolvedValue(null) };
     speechToText = { isConfigured: jest.fn().mockReturnValue(false), transcribe: jest.fn() };
+    translation = { isConfigured: jest.fn().mockReturnValue(true) };
     languages = { findEnabledByCode: jest.fn() };
-    pipeline = { runInBackground: jest.fn() };
+    pipeline = { runInBackground: jest.fn(), translateInBackground: jest.fn() };
     // Non configuré par défaut : chaque test existant continue de passer par
     // StorageService (LOCAL) — voir describe('Cloudinary', ...) plus bas.
     cloudinary = {
@@ -152,6 +155,7 @@ describe('VoiceService', () => {
       presence as unknown as PresenceService,
       notifications as unknown as NotificationsService,
       speechToText as unknown as SpeechToTextService,
+      translation as unknown as TranslationService,
       languages as unknown as LanguagesService,
       pipeline as unknown as VoiceTranslationPipelineService,
       cloudinary as unknown as CloudinaryProvider,
@@ -342,6 +346,97 @@ describe('VoiceService', () => {
 
       expect(result).toEqual({ started: true });
       expect(pipeline.runInBackground).toHaveBeenCalledWith('msg-1');
+    });
+  });
+
+  describe('requestTranslation', () => {
+    function frenchVoiceMessage(voice: Partial<VoiceMessage> = {}) {
+      const message = buildMessageWithVoice(
+        { senderId: 'user-2' },
+        { transcript: 'Bonjour', detectedLanguageId: 'lang-fr', ...voice },
+      );
+      (message.voiceMessage as unknown as Record<string, unknown>).detectedLanguage = {
+        id: 'lang-fr',
+        code: 'fr',
+        name: 'Français',
+        nativeName: 'Français',
+      };
+      return message;
+    }
+
+    it('rejette une langue inconnue du registre (400, jamais 404)', async () => {
+      prisma.message.findUnique.mockResolvedValue(frenchVoiceMessage());
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      languages.findEnabledByCode.mockRejectedValue(new BadRequestException('Langue inconnue.'));
+
+      await expect(service.requestTranslation('user-1', 'msg-1', 'zz')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(pipeline.translateInBackground).not.toHaveBeenCalled();
+    });
+
+    it('ne fait rien si la langue demandée est celle déjà parlée dans le vocal', async () => {
+      prisma.message.findUnique.mockResolvedValue(frenchVoiceMessage());
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      languages.findEnabledByCode.mockResolvedValue({ id: 'lang-fr', code: 'fr' });
+
+      const result = await service.requestTranslation('user-1', 'msg-1', 'fr');
+
+      expect(result).toHaveProperty('voice');
+      expect(pipeline.translateInBackground).not.toHaveBeenCalled();
+    });
+
+    it('est idempotent : renvoie la traduction déjà complétée sans relancer le pipeline', async () => {
+      const message = frenchVoiceMessage();
+      message.voiceMessage.translations = [
+        {
+          status: 'COMPLETED',
+          targetLanguage: { code: 'en', name: 'English', nativeName: 'English' },
+        },
+      ];
+      prisma.message.findUnique.mockResolvedValue(message);
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      languages.findEnabledByCode.mockResolvedValue({ id: 'lang-en', code: 'en' });
+
+      await service.requestTranslation('user-1', 'msg-1', 'en');
+
+      expect(pipeline.translateInBackground).not.toHaveBeenCalled();
+    });
+
+    it('503 si aucune transcription et aucun fournisseur STT configuré', async () => {
+      prisma.message.findUnique.mockResolvedValue(
+        frenchVoiceMessage({ transcript: null, detectedLanguageId: null }),
+      );
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      languages.findEnabledByCode.mockResolvedValue({ id: 'lang-en', code: 'en' });
+      speechToText.isConfigured.mockReturnValue(false);
+
+      await expect(service.requestTranslation('user-1', 'msg-1', 'en')).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+    });
+
+    it('503 si aucun fournisseur de traduction configuré', async () => {
+      prisma.message.findUnique.mockResolvedValue(frenchVoiceMessage());
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      languages.findEnabledByCode.mockResolvedValue({ id: 'lang-en', code: 'en' });
+      translation.isConfigured.mockReturnValue(false);
+
+      await expect(service.requestTranslation('user-1', 'msg-1', 'en')).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      expect(pipeline.translateInBackground).not.toHaveBeenCalled();
+    });
+
+    it('lance la traduction vers la langue choisie', async () => {
+      prisma.message.findUnique.mockResolvedValue(frenchVoiceMessage());
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      languages.findEnabledByCode.mockResolvedValue({ id: 'lang-en', code: 'en' });
+
+      const result = await service.requestTranslation('user-1', 'msg-1', 'en');
+
+      expect(result).toEqual({ started: true });
+      expect(pipeline.translateInBackground).toHaveBeenCalledWith('msg-1', 'en');
     });
   });
 

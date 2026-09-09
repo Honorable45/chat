@@ -461,6 +461,15 @@ export const api = {
     // fournie par GET /conversations/:id/messages, nécessaire pour afficher
     // la transcription/traduction d'un vocal chargé depuis l'historique.
     getDetails: (messageId: string) => request<unknown>(`/voice/${messageId}`),
+    // Demande la traduction d'un vocal vers une langue choisie par le
+    // destinataire (jamais présupposée). Renvoie la forme VoiceMessageDto si
+    // la traduction existe déjà, sinon `{ started: true }` — le résultat
+    // arrive alors via les événements socket "translation:*".
+    requestTranslation: (messageId: string, languageCode: string) =>
+      request<unknown>(`/voice/${messageId}/translate`, {
+        method: "POST",
+        body: { languageCode },
+      }),
     translatedAudioUrl: (messageId: string, languageCode: string) =>
       `${API_URL}/voice/${messageId}/translations/${languageCode}/audio`,
   },

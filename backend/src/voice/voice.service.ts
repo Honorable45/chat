@@ -13,6 +13,7 @@ import { PresenceService } from '../presence/presence.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { VoiceTranslationPipelineService } from '../translations/pipeline/voice-translation-pipeline.service';
 import { SpeechToTextService } from '../translations/speech-to-text/speech-to-text.service';
+import { TranslationService } from '../translations/translation/translation.service';
 import {
   ALLOWED_AUDIO_MIME_TYPES,
   EXTENSION_TO_MIME_TYPE,
@@ -107,6 +108,7 @@ export class VoiceService {
     private readonly presence: PresenceService,
     private readonly notifications: NotificationsService,
     private readonly speechToText: SpeechToTextService,
+    private readonly translation: TranslationService,
     private readonly languages: LanguagesService,
     private readonly pipeline: VoiceTranslationPipelineService,
     private readonly cloudinary: CloudinaryProvider,
@@ -295,6 +297,53 @@ export class VoiceService {
     }
 
     this.pipeline.runInBackground(messageId);
+    return { started: true };
+  }
+
+  /**
+   * Traduit un vocal vers une langue choisie par un membre de la conversation
+   * — jamais présupposée à partir des préférences de qui que ce soit
+   * (section 16). Renvoyé tel quel si la traduction demandée existe déjà
+   * (idempotent) ou si la langue demandée est celle déjà parlée dans le
+   * vocal ; sinon `{ started: true }` et le résultat arrive via les
+   * événements temps réel `translation:*` (comme le pipeline d'envoi).
+   */
+  async requestTranslation(
+    userId: string,
+    messageId: string,
+    languageCode: string,
+  ): Promise<{ started: true } | VoiceMessageDto> {
+    const message = await this.findVoiceMessage(messageId);
+    await this.assertMembership(userId, message.conversationId);
+
+    const language = await this.languages.findEnabledByCode(languageCode);
+    const voice = message.voiceMessage!;
+
+    // Rien à traduire : c'est déjà la langue parlée dans le vocal.
+    if (voice.detectedLanguage?.code === language.code) {
+      return toVoiceMessageDto(message, this.cloudinary);
+    }
+
+    // Déjà traduit vers cette langue : idempotent.
+    const existing = voice.translations.find((t) => t.targetLanguage.code === language.code);
+    if (existing?.status === 'COMPLETED') {
+      return toVoiceMessageDto(message, this.cloudinary);
+    }
+
+    // Vérifiés ici (et pas seulement dans le pipeline) pour renvoyer une
+    // erreur explicite immédiate plutôt qu'un 200 trompeur suivi de rien.
+    if (!voice.transcript && !this.speechToText.isConfigured()) {
+      throw new ServiceUnavailableException(
+        "La transcription vocale n'est pas disponible pour l'instant (aucun fournisseur configuré).",
+      );
+    }
+    if (!this.translation.isConfigured()) {
+      throw new ServiceUnavailableException(
+        "La traduction n'est pas disponible pour l'instant (aucun fournisseur configuré).",
+      );
+    }
+
+    this.pipeline.translateInBackground(messageId, language.code);
     return { started: true };
   }
 
