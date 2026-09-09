@@ -155,6 +155,23 @@ export class VoiceIdentityService {
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
+      // Cas fréquent et permanent (jamais une panne transitoire) : le plan
+      // ElevenLabs de l'utilisateur n'inclut pas le clonage vocal instantané
+      // — un message générique avec le JSON brut de l'API ne dit rien
+      // d'exploitable côté utilisateur (bug réel constaté en prod). Détecté
+      // par son code d'erreur ElevenLabs plutôt que par le seul HTTP 400,
+      // qui couvre aussi des cas réellement transitoires/de saisie.
+      let parsed: { detail?: { code?: string } } | null = null;
+      try {
+        parsed = JSON.parse(detail) as { detail?: { code?: string } };
+      } catch {
+        // Réponse non-JSON (rare) : reste sur le message générique ci-dessous.
+      }
+      if (parsed?.detail?.code === 'paid_plan_required') {
+        throw new BadRequestException(
+          "Le clonage vocal instantané n'est pas inclus dans le plan ElevenLabs actuel de ce compte — une mise à niveau du plan ElevenLabs (pas Glotta) est nécessaire pour l'activer.",
+        );
+      }
       throw new ServiceUnavailableException(
         `Inscription de la voix ElevenLabs échouée (HTTP ${res.status}) : ${detail.slice(0, 300)}`,
       );

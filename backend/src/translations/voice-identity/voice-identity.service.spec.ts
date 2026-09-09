@@ -163,6 +163,57 @@ describe('VoiceIdentityService', () => {
       });
     });
 
+    it('renvoie un message clair (pas le JSON brut) quand ElevenLabs refuse pour un plan payant requis', async () => {
+      process.env.TTS_PROVIDER = 'elevenlabs';
+      process.env.TTS_API_KEY = 'key';
+      prisma.profile.findUnique.mockResolvedValue(
+        buildProfile({ voiceCloningConsent: true, voiceModelId: null }),
+      );
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              detail: {
+                type: 'payment_required',
+                code: 'paid_plan_required',
+                message: 'Your subscription does not include instant voice cloning.',
+                status: 'can_not_use_instant_voice_cloning',
+              },
+            }),
+          ),
+      });
+
+      let caught: unknown;
+      try {
+        await service.enroll('user-1', buildSample());
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(BadRequestException);
+      expect((caught as Error).message).not.toContain('paid_plan_required');
+      expect((caught as Error).message.toLowerCase()).toContain('plan');
+      expect(prisma.profile.update).not.toHaveBeenCalled();
+    });
+
+    it('retombe sur le message générique (avec le détail brut) pour toute autre erreur ElevenLabs', async () => {
+      process.env.TTS_PROVIDER = 'elevenlabs';
+      process.env.TTS_API_KEY = 'key';
+      prisma.profile.findUnique.mockResolvedValue(
+        buildProfile({ voiceCloningConsent: true, voiceModelId: null }),
+      );
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve('Internal error'),
+      });
+
+      await expect(service.enroll('user-1', buildSample())).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+    });
+
     it("supprime l'ancien modèle chez le fournisseur en remplaçant un modèle existant", async () => {
       process.env.TTS_PROVIDER = 'elevenlabs';
       process.env.TTS_API_KEY = 'key';
