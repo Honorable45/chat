@@ -47,6 +47,9 @@ export function ChatWindow({
   onToggleInfo,
   onStartCall,
   canCall,
+  onJoinGroupCall,
+  onStopLiveLocation,
+  activeLiveLocationMessageId,
   onBack,
   highlightMessageId,
   onJumpToMessage,
@@ -67,13 +70,24 @@ export function ChatWindow({
   /** Un ou plusieurs médias envoyés ensemble — voir MediaComposerModal, jamais un fichier par action. */
   onSendMedia: (files: File[], caption: string, replyToId?: string) => Promise<void>;
   /** Position ponctuelle — voir ShareLocationModal. */
-  onSendLocation: (latitude: number, longitude: number, replyToId?: string) => Promise<void>;
+  onSendLocation: (
+    latitude: number,
+    longitude: number,
+    replyToId?: string,
+    live?: { durationSeconds: number },
+  ) => Promise<void>;
   onDeleteVoice: (messageId: string) => void;
   infoOpen: boolean;
   onToggleInfo: () => void;
-  /** Appels réservés aux conversations DIRECT — voir Call.type côté backend, jamais de groupe. */
+  /** Démarre un appel — routé côté chat/page.tsx vers l'appel 1:1 ou de groupe selon le type de la conversation. */
   onStartCall: (kind: "AUDIO" | "VIDEO") => void;
   canCall: boolean;
+  /** Rejoint un appel de groupe déjà en cours depuis sa bulle dans le fil (voir MessageBubble). */
+  onJoinGroupCall: (groupCallId: string, conversationId: string, kind: "AUDIO" | "VIDEO") => void;
+  /** Arrête le partage de position en direct actif (voir chat/page.tsx::liveLocation) — jamais un messageId en paramètre, un seul partage actif à la fois par onglet. */
+  onStopLiveLocation: () => void;
+  /** Id du message dont le partage de position en direct est actif sur CET onglet — pilote l'affichage du bouton "Arrêter" (voir MessageBubble). */
+  activeLiveLocationMessageId: string | null;
   /** Écrans étroits (< lg) uniquement : retour à la liste des conversations — voir chat/page.tsx. */
   onBack: () => void;
   /** Message sur lequel on vient de sauter depuis la recherche — brièvement surligné, voir MessageBubble. */
@@ -205,16 +219,16 @@ export function ChatWindow({
         <div className="flex items-center gap-1.5 text-muted">
           <button
             onClick={() => onStartCall("AUDIO")}
-            disabled={!other || !canCall}
-            title={other ? (canCall ? `Appeler ${title}` : "Un appel est déjà en cours") : "Appel indisponible pour un groupe"}
+            disabled={!canCall}
+            title={canCall ? (other ? `Appeler ${title}` : `Appeler le groupe ${title}`) : "Un appel est déjà en cours"}
             className="flex h-9 w-9 items-center justify-center rounded-xl transition hover:bg-surface-raised hover:text-foreground disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted"
           >
             <PhoneIcon size={18} />
           </button>
           <button
             onClick={() => onStartCall("VIDEO")}
-            disabled={!other || !canCall}
-            title={other ? (canCall ? `Appel vidéo avec ${title}` : "Un appel est déjà en cours") : "Appel indisponible pour un groupe"}
+            disabled={!canCall}
+            title={canCall ? (other ? `Appel vidéo avec ${title}` : `Appel vidéo de groupe avec ${title}`) : "Un appel est déjà en cours"}
             className="flex h-9 w-9 items-center justify-center rounded-xl transition hover:bg-surface-raised hover:text-foreground disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted"
           >
             <VideoIcon size={18} />
@@ -310,6 +324,8 @@ export function ChatWindow({
                   myLanguageCode={me.preferredReceiveLanguage?.code ?? me.primaryLanguage?.code}
                   onDeleteVoice={onDeleteVoice}
                   onCallBack={canCall ? onStartCall : undefined}
+                  onJoinGroupCall={onJoinGroupCall}
+                  onStopLiveLocation={m.id === activeLiveLocationMessageId ? onStopLiveLocation : undefined}
                   onReply={setReplyingTo}
                   onJumpToMessage={onJumpToMessage}
                 />
@@ -360,8 +376,8 @@ export function ChatWindow({
       {locationPickerOpen && (
         <ShareLocationModal
           onClose={() => setLocationPickerOpen(false)}
-          onShare={async (latitude, longitude) => {
-            await onSendLocation(latitude, longitude, replyingTo?.id);
+          onShare={async (latitude, longitude, live) => {
+            await onSendLocation(latitude, longitude, replyingTo?.id, live);
             setReplyingTo(null);
           }}
         />

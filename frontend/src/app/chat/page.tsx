@@ -5,6 +5,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { BouncingDots } from "@/components/BouncingDots";
 import { ChatIcon } from "@/components/icons";
 import { CallOverlay } from "@/components/chat/CallOverlay";
+import { GroupCallOverlay } from "@/components/chat/GroupCallOverlay";
 import { MinimizedCallBar } from "@/components/chat/MinimizedCallBar";
 import { CallsPanel } from "@/components/chat/CallsPanel";
 import { ChatWindow } from "@/components/chat/ChatWindow";
@@ -23,8 +24,17 @@ import { readMediaMeta } from "@/lib/media-metadata";
 import { normalizeIncomingMessage } from "@/lib/normalize-message";
 import { useSocket } from "@/lib/socket";
 import { useCall } from "@/lib/use-call";
+import { useGroupCall } from "@/lib/use-group-call";
+import { useLiveLocation } from "@/lib/use-live-location";
 import { unlockAudioOnFirstInteraction } from "@/lib/use-ring-tone";
-import type { CallMessagePayload, Conversation, ConversationLastMessage, Message, MessageTranslationDetail } from "@/lib/types";
+import type {
+  CallMessagePayload,
+  Conversation,
+  ConversationLastMessage,
+  GroupCallMessagePayload,
+  Message,
+  MessageTranslationDetail,
+} from "@/lib/types";
 import type { VoiceRecording } from "@/lib/use-voice-recorder";
 
 function sortByUpdatedAtDesc(list: Conversation[]): Conversation[] {
@@ -76,6 +86,32 @@ function toCallMessage(payload: CallMessagePayload): Message {
     mentions: [],
     mentionsEveryone: false,
     call: payload.call,
+  };
+}
+
+/** Même principe que toCallMessage ci-dessus, pour un appel de groupe (voir GroupCallMessagePayload/use-group-call.ts). */
+function toGroupCallMessage(payload: GroupCallMessagePayload): Message {
+  return {
+    id: payload.id,
+    conversationId: payload.conversationId,
+    senderId: payload.senderId,
+    type: "GROUP_CALL",
+    text: null,
+    systemAction: null,
+    systemTargetUserId: null,
+    replyToId: null,
+    replyTo: null,
+    editedAt: null,
+    deletedAt: null,
+    sentAt: payload.sentAt,
+    deliveredAt: null,
+    readAt: null,
+    createdAt: payload.createdAt,
+    reactions: [],
+    location: null,
+    mentions: [],
+    mentionsEveryone: false,
+    groupCall: payload.groupCall,
   };
 }
 
@@ -308,6 +344,21 @@ function ChatPageInner() {
     }
   }, []);
 
+  // Même principe que hydrateCallMessages ci-dessus, pour les appels de groupe.
+  const hydrateGroupCallMessages = useCallback((items: Message[]) => {
+    const toHydrate = items.filter((m) => m.type === "GROUP_CALL" && !m.groupCall);
+    for (const m of toHydrate) {
+      api.groupCalls
+        .getMessage(m.id)
+        .then((payload) => {
+          setMessages((prev) => prev.map((existing) => (existing.id === m.id ? toGroupCallMessage(payload) : existing)));
+        })
+        .catch(() => {
+          // Best-effort : la bulle reste utilisable sans le détail (participants).
+        });
+    }
+  }, []);
+
   // Même principe que hydrateCallMessages ci-dessus, pour les messages
   // CONTACT_SHARE (jamais fournis avec leur détail par l'historique — voir
   // GET /contacts/message/:id).
@@ -342,6 +393,7 @@ function ChatPageInner() {
         hydrateVoiceMessages(page.items);
         hydrateCallMessages(page.items);
         hydrateContactShareMessages(page.items);
+        hydrateGroupCallMessages(page.items);
         if (conversation.unreadCount > 0) {
           patchConversation(conversation.id, { unreadCount: 0 });
           await api.conversations.markRead(conversation.id);
@@ -352,7 +404,7 @@ function ChatPageInner() {
         setLoadingMessages(false);
       }
     },
-    [patchConversation, hydrateVoiceMessages, hydrateCallMessages, hydrateContactShareMessages],
+    [patchConversation, hydrateVoiceMessages, hydrateCallMessages, hydrateContactShareMessages, hydrateGroupCallMessages],
   );
 
   // Sélectionne, au premier chargement : la conversation demandée par
@@ -391,6 +443,7 @@ function ChatPageInner() {
       hydrateVoiceMessages(page.items);
       hydrateCallMessages(page.items);
       hydrateContactShareMessages(page.items);
+        hydrateGroupCallMessages(page.items);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Impossible de charger la suite.");
     } finally {
@@ -414,6 +467,7 @@ function ChatPageInner() {
         hydrateVoiceMessages(page.items);
         hydrateCallMessages(page.items);
         hydrateContactShareMessages(page.items);
+        hydrateGroupCallMessages(page.items);
         if (highlightTimeoutRef.current) clearTimeout(highlightTimeoutRef.current);
         setHighlightMessageId(messageId);
         highlightTimeoutRef.current = setTimeout(() => setHighlightMessageId(null), 2500);
@@ -421,7 +475,7 @@ function ChatPageInner() {
         setError(err instanceof ApiError ? err.message : "Impossible d'afficher ce message.");
       }
     },
-    [selected, hydrateVoiceMessages, hydrateCallMessages, hydrateContactShareMessages],
+    [selected, hydrateVoiceMessages, hydrateCallMessages, hydrateContactShareMessages, hydrateGroupCallMessages],
   );
 
   async function sendMessage(text: string, replyToId?: string) {
@@ -434,14 +488,27 @@ function ChatPageInner() {
     });
   }
 
-  async function sendLocation(latitude: number, longitude: number, replyToId?: string) {
+  async function sendLocation(
+    latitude: number,
+    longitude: number,
+    replyToId?: string,
+    live?: { durationSeconds: number },
+  ) {
     if (!selected) return;
-    const msg = await api.messages.sendLocation({ conversationId: selected.id, latitude, longitude, replyToId });
+    const msg = await api.messages.sendLocation({
+      conversationId: selected.id,
+      latitude,
+      longitude,
+      replyToId,
+      isLive: Boolean(live),
+      durationSeconds: live?.durationSeconds,
+    });
     setMessages((prev) => [...prev, msg]);
     patchConversation(selected.id, {
       lastMessage: toLastMessage(msg),
       updatedAt: msg.sentAt,
     });
+    if (live) liveLocation.start(msg.id, live.durationSeconds);
   }
 
   async function sendSticker(emoji: string, replyToId?: string) {
@@ -609,8 +676,66 @@ function ChatPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `call` (retourné par useCall) est un nouvel objet à chaque rendu ; dépendre de sa seule référence stable (call.resumeIncoming, via useCallback) plutôt que de l'objet entier évite une boucle de ré-exécution.
   }, [call.phase, call.resumeIncoming, searchParams, router]);
 
+  // Même reprise que ci-dessus, mais pour un onglet déjà ouvert (voir sw.js,
+  // notificationclick) : cliquer "Répondre" alors qu'un onglet existe déjà
+  // ne le navigue JAMAIS (voir le commentaire détaillé dans sw.js — ça
+  // détruirait l'état d'appel en mémoire et provoquait un vrai bug en prod,
+  // "Répondre" raccrochait l'appel), il se contente de le focaliser et de
+  // lui envoyer ce message à la place. `resumeIncoming` est idempotent :
+  // sans effet si cet onglet sonnait déjà (reçu en temps réel via
+  // "call:incoming"), sinon rattrape l'état exact depuis le serveur.
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    function onMessage(event: MessageEvent) {
+      if (event.data?.type === "resume-call" && typeof event.data.callId === "string") {
+        void call.resumeIncoming(event.data.callId);
+      }
+    }
+    navigator.serviceWorker.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- même raison que l'effet précédent : référence stable de call.resumeIncoming uniquement.
+  }, [call.resumeIncoming]);
+
+  // Même principe que applyCallMessage ci-dessus, pour un appel de groupe.
+  const applyGroupCallMessage = useCallback(
+    (payload: GroupCallMessagePayload) => {
+      const message = toGroupCallMessage(payload);
+
+      if (selectedIdRef.current === payload.conversationId) {
+        setMessages((prev) => {
+          const exists = prev.some((m) => m.id === message.id);
+          return exists ? prev.map((m) => (m.id === message.id ? message : m)) : [...prev, message];
+        });
+      }
+
+      setConversations((prev) => {
+        const exists = prev.some((c) => c.id === payload.conversationId);
+        if (!exists) {
+          void refreshConversations();
+          return prev;
+        }
+        return sortByUpdatedAtDesc(
+          prev.map((c) =>
+            c.id === payload.conversationId
+              ? { ...c, lastMessage: toLastMessage(message), updatedAt: message.sentAt }
+              : c,
+          ),
+        );
+      });
+    },
+    [refreshConversations],
+  );
+
+  const groupCall = useGroupCall(Boolean(user), applyGroupCallMessage);
+  const liveLocation = useLiveLocation();
+
   function startCall(kind: "AUDIO" | "VIDEO") {
-    if (!selected?.otherParticipant) return;
+    if (!selected) return;
+    if (selected.type === "GROUP") {
+      void groupCall.start(selected.id, kind);
+      return;
+    }
+    if (!selected.otherParticipant) return;
     void call.start(selected.id, selected.otherParticipant.id, kind);
   }
 
@@ -619,6 +744,15 @@ function ChatPageInner() {
     callConversation?.otherParticipant ??
     (call.otherUserId ? conversations.flatMap((c) => c.members).find((m) => m.id === call.otherUserId) : null) ??
     null;
+
+  const groupCallConversation = conversations.find((c) => c.id === groupCall.conversationId) ?? null;
+  // Membres du groupe ni RINGING ni JOINED dans l'appel en cours — jamais
+  // proposés à l'invitation sinon (voir GroupCallsService.invite, qui les
+  // ignorerait de toute façon côté serveur).
+  const groupCallInviteCandidates =
+    groupCallConversation?.members.filter(
+      (m) => m.id !== user?.id && !groupCall.participants.some((p) => p.userId === m.id),
+    ) ?? [];
 
   // Temps réel : un seul abonnement pour toute la durée de vie de la
   // connexion socket, jamais réabonné à chaque changement de sélection (voir
@@ -867,7 +1001,10 @@ function ChatPageInner() {
           infoOpen={infoOpen}
           onToggleInfo={() => setInfoOpen((v) => !v)}
           onStartCall={startCall}
-          canCall={call.phase === "idle"}
+          canCall={selected.type === "GROUP" ? groupCall.phase === "idle" : call.phase === "idle"}
+          onJoinGroupCall={(groupCallId, conversationId, kind) => void groupCall.joinById(groupCallId, conversationId, kind)}
+          onStopLiveLocation={liveLocation.stop}
+          activeLiveLocationMessageId={liveLocation.activeMessageId}
           onBack={() => setSelectedId(null)}
           highlightMessageId={highlightMessageId}
           onJumpToMessage={(id) => void jumpToMessage(id)}
@@ -941,6 +1078,27 @@ function ChatPageInner() {
           durationSeconds={call.durationSeconds}
           onExpand={() => setCallMinimized(false)}
           onHangUp={() => void call.hangUp()}
+        />
+      )}
+
+      {groupCall.phase !== "idle" && (
+        <GroupCallOverlay
+          phase={groupCall.phase}
+          kind={groupCall.kind}
+          conversationTitle={groupCallConversation?.title ?? "Appel de groupe"}
+          participants={groupCall.participants}
+          myUserId={user.id}
+          durationSeconds={groupCall.durationSeconds}
+          muted={groupCall.muted}
+          error={groupCall.error}
+          remoteStreams={groupCall.remoteStreams}
+          localVideoStream={groupCall.localVideoStream}
+          onAccept={() => void groupCall.join()}
+          onDecline={() => void groupCall.decline()}
+          onLeave={() => void groupCall.leave()}
+          onToggleMute={groupCall.toggleMute}
+          onInviteMore={groupCall.phase === "active" ? (userIds) => void groupCall.inviteMore(userIds) : undefined}
+          inviteCandidates={groupCallInviteCandidates}
         />
       )}
 

@@ -97,7 +97,7 @@ self.addEventListener("push", (event) => {
               { action: "reject", title: "Refuser" },
             ]
           : undefined,
-        data: { url: payload.url || "/chat", rejectToken: payload.rejectToken },
+        data: { url: payload.url || "/chat", rejectToken: payload.rejectToken, callId: payload.callId },
       });
     })(),
   );
@@ -135,6 +135,7 @@ self.addEventListener("notificationclick", (event) => {
   // notification (pour un appel, inclut `?incomingCall=<id>` — voir
   // chat/page.tsx, qui reprend alors l'appel via useCall.resumeIncoming).
   const targetUrl = data.url || "/chat";
+  const isCall = Boolean(data.callId);
 
   event.waitUntil(
     (async () => {
@@ -147,6 +148,23 @@ self.addEventListener("notificationclick", (event) => {
         }
       });
       if (existing) {
+        if (isCall) {
+          // Ne JAMAIS naviguer un onglet déjà ouvert pour un appel : l'état
+          // de l'appel (useCall) vit en mémoire dans cette page — une
+          // navigation la détruit et force une reconnexion du socket
+          // "/calls", qui déclenche côté serveur la résolution de l'appel
+          // comme "orphelin" (voir CallsGateway.handleDisconnect) pile
+          // pendant qu'on essaie d'y répondre — bug réel constaté en prod
+          // ("Répondre" raccrochait l'appel au lieu de le prendre). On se
+          // contente de focaliser l'onglet et de lui signaler l'appel : s'il
+          // sonnait déjà (reçu en temps réel), resumeIncoming n'a aucun
+          // effet (déjà en phase "incoming") ; sinon (onglet en arrière-plan
+          // qui aurait manqué l'événement), il rattrape l'état exact depuis
+          // le serveur, exactement comme au démarrage à froid.
+          existing.postMessage({ type: "resume-call", callId: data.callId });
+          await existing.focus();
+          return;
+        }
         await existing.navigate(targetUrl);
         await existing.focus();
         return;

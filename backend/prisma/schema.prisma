@@ -61,6 +61,8 @@ model User {
   mentions                MessageMention[]
   pushSubscriptions       PushSubscription[]
   favoriteStickers        FavoriteSticker[]
+  groupCallsInitiated     GroupCall[]            @relation("GroupCallInitiator")
+  groupCallParticipations GroupCallParticipant[]
 
   isActive   Boolean   @default(true)
   // Jamais modifiable depuis un endpoint self-service (section admin) :
@@ -249,9 +251,10 @@ model Conversation {
   // potentiel de nuisance différent d'un simple message.
   mentionEveryonePermission GroupPermission @default(ADMIN_ONLY)
 
-  members  ConversationMember[]
-  messages Message[]
-  invite   GroupInvite?
+  members    ConversationMember[]
+  messages   Message[]
+  invite     GroupInvite?
+  groupCalls GroupCall[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -359,6 +362,7 @@ model Message {
   reactions     Reaction[]
   reads         MessageRead[]
   call          Call?
+  groupCall     GroupCall?
   sharedContact SharedContact?
   location      LocationMessage?
 
@@ -383,6 +387,9 @@ enum MessageType {
   VIDEO
   FILE
   CALL
+  // Appel de groupe (maillage direct, voir GroupCall) — jamais pour une
+  // conversation DIRECT, où CALL suffit.
+  GROUP_CALL
   // Un ou plusieurs médias (image/vidéo) envoyés ensemble en une seule
   // action — voir MessagesService.sendMedia. Remplace IMAGE pour tout
   // nouvel envoi (même un seul fichier, l'affichage s'adapte côté
@@ -686,6 +693,70 @@ enum CallStatus {
   ENDED
 }
 
+// Appel de groupe — modèle volontairement séparé de Call ci-dessus plutôt
+// que de généraliser callerId/calleeId à N participants : Call reste la
+// signalisation 1:1 simple et déjà stable (CallsService/CallsGateway,
+// inchangés), pendant qu'un appel de groupe a une forme de données
+// fondamentalement différente (liste ouverte de participants, chacun avec
+// son propre statut RINGING/JOINED/DECLINED/LEFT, topologie maillée côté
+// WebRTC — chaque participant se connecte directement à chaque autre,
+// jusqu'à 4-5 personnes, voir GroupCallsGateway) plutôt qu'un simple couple
+// appelant/appelé. Réunir les deux dans un seul modèle aurait rendu le cas
+// 1:1, de loin le plus fréquent, plus complexe pour un bénéfice nul.
+model GroupCall {
+  id             String   @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  messageId      String   @unique
+  message        Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  initiatorId String
+  initiator   User   @relation("GroupCallInitiator", fields: [initiatorId], references: [id], onDelete: Cascade)
+
+  type   CallType        @default(AUDIO)
+  status GroupCallStatus @default(ACTIVE)
+
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+
+  participants GroupCallParticipant[]
+
+  @@index([conversationId, status])
+  @@map("group_calls")
+}
+
+model GroupCallParticipant {
+  id          String    @id @default(cuid())
+  groupCallId String
+  groupCall   GroupCall @relation(fields: [groupCallId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  status GroupCallParticipantStatus @default(RINGING)
+
+  invitedAt DateTime  @default(now())
+  joinedAt  DateTime?
+  leftAt    DateTime?
+
+  @@unique([groupCallId, userId])
+  @@map("group_call_participants")
+}
+
+enum GroupCallStatus {
+  ACTIVE
+  ENDED
+}
+
+enum GroupCallParticipantStatus {
+  RINGING
+  JOINED
+  DECLINED
+  // A quitté un appel encore en cours (voir ACTIVE) — distinct de DECLINED
+  // (jamais rejoint du tout) : compte différemment pour l'historique et
+  // n'empêche jamais d'être réinvité (voir GroupCallsService.invite).
+  LEFT
+}
+
 // ---------------------------------------------------------------------------
 // Contacts (section 5/2 du cahier des charges NEXORA) — demandes de contact
 // et partage de carte de contact dans une conversation.
@@ -752,8 +823,24 @@ model LocationMessage {
   messageId String  @unique
   message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
+  // Dernière position connue — pour une position "en direct" (isLive),
+  // réécrite en place à chaque mise à jour (voir MessagesService.
+  // updateLiveLocation) plutôt que de créer un nouveau message à chaque
+  // fois : une seule bulle qui se met à jour, comme WhatsApp.
   latitude  Float
   longitude Float
+
+  // Position en direct (jamais mise à jour ensuite pour false, voir
+  // MessageType.LOCATION) — durée choisie par l'expéditeur au moment de
+  // l'envoi (15 min/1h/8h côté frontend, mais aucune valeur figée ici).
+  isLive    Boolean   @default(false)
+  // Fin naturelle du partage (createdAt + durée choisie) — jamais recalculée
+  // après coup. `null` pour une position ponctuelle (isLive false).
+  expiresAt DateTime?
+  // Arrêt anticipé explicite par l'expéditeur (voir MessagesService.
+  // stopLiveLocation) — distinct d'expiresAt : le partage peut se terminer
+  // par expiration naturelle SANS jamais passer par ce champ.
+  endedAt   DateTime?
 
   createdAt DateTime @default(now())
 

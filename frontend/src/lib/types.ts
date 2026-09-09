@@ -79,6 +79,7 @@ export type MessageType =
   | "VIDEO"
   | "FILE"
   | "CALL"
+  | "GROUP_CALL"
   | "MEDIA_ALBUM"
   | "CONTACT_SHARE"
   | "LOCATION"
@@ -127,6 +128,40 @@ export interface GroupInvitePreview {
 }
 
 export type CallStatus = "RINGING" | "ACTIVE" | "MISSED" | "DECLINED" | "ENDED";
+
+export type GroupCallParticipantStatus = "RINGING" | "JOINED" | "DECLINED" | "LEFT";
+
+export interface GroupCallParticipant {
+  userId: string;
+  firstName: string;
+  lastName: string;
+  avatarUrl: string | null;
+  status: GroupCallParticipantStatus;
+}
+
+export type GroupCallStatus = "ACTIVE" | "ENDED";
+
+export interface GroupCallDetail {
+  id: string;
+  conversationId: string;
+  initiatorId: string;
+  type: "AUDIO" | "VIDEO";
+  status: GroupCallStatus;
+  startedAt: string;
+  endedAt: string | null;
+  participants: GroupCallParticipant[];
+}
+
+/** Vue "message" d'un appel de groupe — même principe que CallMessagePayload (appel 1:1), voir use-group-call.ts. */
+export interface GroupCallMessagePayload {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  type: "GROUP_CALL";
+  sentAt: string;
+  createdAt: string;
+  groupCall: GroupCallDetail;
+}
 
 export interface CallDetail {
   id: string;
@@ -310,14 +345,25 @@ export interface Message {
    * la demande via `GET /calls/message/:id` ou mis à jour en direct par les
    * événements du namespace WebSocket "/calls". */
   call?: CallDetail;
+  /** Détail d'un message GROUP_CALL — même principe que `call` (récupéré à la demande via `GET /group-calls/message/:id` ou mis à jour en direct par les événements du namespace WebSocket "/group-calls"). */
+  groupCall?: GroupCallDetail;
   /** Détail d'un message CONTACT_SHARE — contrairement à CALL, la forme
    * renvoyée par POST /contacts/share et GET /contacts/message/:id est déjà
    * un Message complet (voir ContactsService.toContactShareMessageDto côté
    * backend) : jamais besoin de conversion, juste absent tant qu'un message
    * chargé depuis l'historique n'a pas encore été hydraté. */
   sharedContact?: PublicUser;
-  /** Uniquement renseigné quand `type === "LOCATION"` — une seule capture au moment de l'envoi, jamais mise à jour ensuite (pas de position en direct). */
-  location: { latitude: number; longitude: number } | null;
+  /** Uniquement renseigné quand `type === "LOCATION"`. `isLive` : position en
+   * direct, mise à jour en place (voir api.messages.updateLocation) jusqu'à
+   * expiresAt ou un arrêt anticipé (endedAt) — sinon une simple capture
+   * figée au moment de l'envoi. */
+  location: {
+    latitude: number;
+    longitude: number;
+    isLive: boolean;
+    expiresAt: string | null;
+    endedAt: string | null;
+  } | null;
 }
 
 /** Grand jeu d'emojis pour le sélecteur de stickers (voir StickerPicker.tsx)

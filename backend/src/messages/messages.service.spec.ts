@@ -87,6 +87,7 @@ describe('MessagesService', () => {
     attachment: { findUnique: jest.Mock; findMany: jest.Mock };
     reaction: { upsert: jest.Mock; deleteMany: jest.Mock };
     messageMention: { createMany: jest.Mock };
+    locationMessage: { update: jest.Mock };
     $transaction: jest.Mock;
   };
   let events: { emitToUsers: jest.Mock };
@@ -128,6 +129,7 @@ describe('MessagesService', () => {
       attachment: { findUnique: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
       reaction: { upsert: jest.fn(), deleteMany: jest.fn() },
       messageMention: { createMany: jest.fn() },
+      locationMessage: { update: jest.fn() },
       $transaction: jest.fn(),
     };
     events = { emitToUsers: jest.fn() };
@@ -256,7 +258,13 @@ describe('MessagesService', () => {
       const created = {
         ...buildMessage({ type: 'LOCATION', text: null }),
         reads: [],
-        location: { latitude: 48.8566, longitude: 2.3522 },
+        location: {
+          latitude: 48.8566,
+          longitude: 2.3522,
+          isLive: false,
+          expiresAt: null,
+          endedAt: null,
+        },
       };
       prisma.$transaction.mockResolvedValue([created, {}]);
 
@@ -266,7 +274,13 @@ describe('MessagesService', () => {
         longitude: 2.3522,
       });
 
-      expect(result.location).toEqual({ latitude: 48.8566, longitude: 2.3522 });
+      expect(result.location).toEqual({
+        latitude: 48.8566,
+        longitude: 2.3522,
+        isLive: false,
+        expiresAt: null,
+        endedAt: null,
+      });
       expect(events.emitToUsers).toHaveBeenCalledWith(
         ['user-2'],
         'message:new',
@@ -277,6 +291,211 @@ describe('MessagesService', () => {
         'NEW_MESSAGE',
         expect.objectContaining({ preview: '📍 Position' }),
       );
+    });
+
+    it('refuse une position en direct sans durée', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+
+      await expect(
+        service.sendLocation('user-1', {
+          conversationId: 'conv-1',
+          latitude: 48.8566,
+          longitude: 2.3522,
+          isLive: true,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('calcule expiresAt à partir de durationSeconds pour une position en direct, et adapte le texte de notification', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      prisma.$transaction.mockResolvedValue([
+        { ...buildMessage({ type: 'LOCATION', text: null }), reads: [] },
+        {},
+      ]);
+
+      const before = Date.now();
+      await service.sendLocation('user-1', {
+        conversationId: 'conv-1',
+        latitude: 48.8566,
+        longitude: 2.3522,
+        isLive: true,
+        durationSeconds: 900,
+      });
+
+      expect(prisma.message.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.objectContaining imbriqué est typé `any`, assert de test uniquement.
+          data: expect.objectContaining({
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+            location: expect.objectContaining({
+              // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+              create: expect.objectContaining({ isLive: true }),
+            }),
+          }),
+        }),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access -- mock.calls est typé `any[][]`, casté juste après, assert de test uniquement.
+      const createCall = prisma.message.create.mock.calls[0][0] as {
+        data: { location: { create: { expiresAt: Date } } };
+      };
+      const expiresAt = createCall.data.location.create.expiresAt;
+      expect(expiresAt.getTime()).toBeGreaterThanOrEqual(before + 900 * 1000);
+      expect(notifications.create).toHaveBeenCalledWith(
+        'user-2',
+        'NEW_MESSAGE',
+        expect.objectContaining({ preview: '📍 Position en direct' }),
+      );
+    });
+  });
+
+  describe('updateLiveLocation', () => {
+    function buildLiveLocationMessage(overrides: Record<string, unknown> = {}) {
+      return {
+        ...buildMessage({ type: 'LOCATION', senderId: 'user-1', conversationId: 'conv-1' }),
+        reads: [],
+        location: {
+          latitude: 48.8566,
+          longitude: 2.3522,
+          isLive: true,
+          expiresAt: new Date(Date.now() + 60_000),
+          endedAt: null,
+        },
+        ...overrides,
+      };
+    }
+
+    it("404 si le message n'existe pas, n'est pas de type LOCATION, n'est pas en direct, ou n'appartient pas à l'appelant (jamais 403)", async () => {
+      prisma.message.findUnique.mockResolvedValueOnce(null);
+      await expect(
+        service.updateLiveLocation('user-1', 'msg-1', { latitude: 1, longitude: 1 }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      prisma.message.findUnique.mockResolvedValueOnce(
+        buildLiveLocationMessage({ senderId: 'user-2' }),
+      );
+      await expect(
+        service.updateLiveLocation('user-1', 'msg-1', { latitude: 1, longitude: 1 }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      prisma.message.findUnique.mockResolvedValueOnce(
+        buildLiveLocationMessage({
+          location: { ...buildLiveLocationMessage().location, isLive: false },
+        }),
+      );
+      await expect(
+        service.updateLiveLocation('user-1', 'msg-1', { latitude: 1, longitude: 1 }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('met à jour la position, diffuse message:updated (y compris à soi-même) mais ne notifie jamais', async () => {
+      prisma.message.findUnique.mockResolvedValue(buildLiveLocationMessage());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      prisma.message.findUniqueOrThrow.mockResolvedValue(
+        buildLiveLocationMessage({
+          location: { ...buildLiveLocationMessage().location, latitude: 1, longitude: 2 },
+        }),
+      );
+
+      const result = await service.updateLiveLocation('user-1', 'msg-1', {
+        latitude: 1,
+        longitude: 2,
+      });
+
+      expect(prisma.locationMessage.update).toHaveBeenCalledWith({
+        where: { messageId: 'msg-1' },
+        data: { latitude: 1, longitude: 2 },
+      });
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2', 'user-1'],
+        'message:updated',
+        expect.objectContaining({ id: result.id }),
+      );
+      expect(notifications.create).not.toHaveBeenCalled();
+    });
+
+    it('ne fait rien (silencieusement) si le partage a déjà expiré', async () => {
+      prisma.message.findUnique.mockResolvedValue(
+        buildLiveLocationMessage({
+          location: {
+            ...buildLiveLocationMessage().location,
+            expiresAt: new Date(Date.now() - 1000),
+          },
+        }),
+      );
+
+      await service.updateLiveLocation('user-1', 'msg-1', { latitude: 1, longitude: 2 });
+
+      expect(prisma.locationMessage.update).not.toHaveBeenCalled();
+    });
+
+    it('ne fait rien si le partage a déjà été arrêté (endedAt)', async () => {
+      prisma.message.findUnique.mockResolvedValue(
+        buildLiveLocationMessage({
+          location: { ...buildLiveLocationMessage().location, endedAt: new Date() },
+        }),
+      );
+
+      await service.updateLiveLocation('user-1', 'msg-1', { latitude: 1, longitude: 2 });
+
+      expect(prisma.locationMessage.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('stopLiveLocation', () => {
+    it('marque endedAt et diffuse message:updated', async () => {
+      const message = {
+        ...buildMessage({ type: 'LOCATION', senderId: 'user-1', conversationId: 'conv-1' }),
+        reads: [],
+        location: {
+          latitude: 48.8566,
+          longitude: 2.3522,
+          isLive: true,
+          expiresAt: new Date(Date.now() + 60_000),
+          endedAt: null,
+        },
+      };
+      prisma.message.findUnique.mockResolvedValue(message);
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      prisma.message.findUniqueOrThrow.mockResolvedValue({
+        ...message,
+        location: { ...message.location, endedAt: new Date() },
+      });
+
+      await service.stopLiveLocation('user-1', 'msg-1');
+
+      expect(prisma.locationMessage.update).toHaveBeenCalledWith({
+        where: { messageId: 'msg-1' },
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- expect.any(Date) est typé `any`, assert de test uniquement.
+        data: { endedAt: expect.any(Date) },
+      });
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2', 'user-1'],
+        'message:updated',
+        expect.any(Object),
+      );
+    });
+
+    it('est idempotent : arrêter un partage déjà terminé ne réécrit rien', async () => {
+      const message = {
+        ...buildMessage({ type: 'LOCATION', senderId: 'user-1', conversationId: 'conv-1' }),
+        reads: [],
+        location: {
+          latitude: 48.8566,
+          longitude: 2.3522,
+          isLive: true,
+          expiresAt: new Date(Date.now() - 1000),
+          endedAt: null,
+        },
+      };
+      prisma.message.findUnique.mockResolvedValue(message);
+      prisma.conversationMember.findMany.mockResolvedValue([]);
+      prisma.message.findUniqueOrThrow.mockResolvedValue(message);
+
+      await service.stopLiveLocation('user-1', 'msg-1');
+
+      expect(prisma.locationMessage.update).not.toHaveBeenCalled();
     });
   });
 

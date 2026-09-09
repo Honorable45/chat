@@ -15,6 +15,7 @@ import { LanguagesModule } from './languages/languages.module';
 import { MaintenanceModule } from './maintenance/maintenance.module';
 import { CallsModule } from './calls/calls.module';
 import { ContactsModule } from './contacts/contacts.module';
+import { GroupCallsModule } from './group-calls/group-calls.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { MessagesModule } from './messages/messages.module';
 import { VoiceModule } from './voice/voice.module';
@@ -66,6 +67,7 @@ import { WebsocketModule } from './websocket/websocket.module';
     ConversationsModule,
     MessagesModule,
     CallsModule,
+    GroupCallsModule,
     ContactsModule,
     VoiceModule,
     TranslationsModule,

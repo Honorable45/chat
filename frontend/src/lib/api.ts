@@ -7,6 +7,7 @@ import type {
   ContactRequest,
   ContactStatus,
   Conversation,
+  GroupCallMessagePayload,
   GroupInvite,
   GroupInvitePreview,
   GroupPermission,
@@ -415,10 +416,21 @@ export const api = {
     addReaction: (id: string, emoji: string) =>
       request<Message>(`/messages/${id}/reactions`, { method: "POST", body: { emoji } }),
     removeReaction: (id: string) => request<Message>(`/messages/${id}/reactions`, { method: "DELETE" }),
-    // Position ponctuelle (voir ShareLocationModal) — une seule capture au
-    // moment de l'envoi, jamais mise à jour ensuite.
-    sendLocation: (params: { conversationId: string; latitude: number; longitude: number; replyToId?: string }) =>
-      request<Message>("/messages/location", { method: "POST", body: params }),
+    // Position ponctuelle OU en direct selon `isLive` (voir ShareLocationModal) —
+    // une position en direct est ensuite mise à jour en place via updateLocation.
+    sendLocation: (params: {
+      conversationId: string;
+      latitude: number;
+      longitude: number;
+      isLive?: boolean;
+      durationSeconds?: number;
+      replyToId?: string;
+    }) => request<Message>("/messages/location", { method: "POST", body: params }),
+    // Position en direct uniquement — voir use-live-location.ts.
+    updateLocation: (messageId: string, params: { latitude: number; longitude: number }) =>
+      request<Message>(`/messages/${messageId}/location`, { method: "PATCH", body: params }),
+    stopLocation: (messageId: string) =>
+      request<Message>(`/messages/${messageId}/location/stop`, { method: "POST" }),
     // Sticker = gros emoji envoyé comme bulle à part entière (voir StickerPicker).
     sendSticker: (params: { conversationId: string; emoji: string; replyToId?: string }) =>
       request<Message>("/messages/sticker", { method: "POST", body: params }),
@@ -477,6 +489,10 @@ export const api = {
     getById: (callId: string) => request<CallMessagePayload>(`/calls/${callId}`),
     history: (cursor?: string) =>
       request<Page<CallHistoryEntry>>(`/calls${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+  },
+  groupCalls: {
+    // Hydratation à la demande d'un message GROUP_CALL chargé depuis l'historique — même principe que calls.getMessage.
+    getMessage: (messageId: string) => request<GroupCallMessagePayload>(`/group-calls/message/${messageId}`),
   },
   contacts: {
     list: () => request<PublicUser[]>("/contacts"),

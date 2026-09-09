@@ -88,6 +88,7 @@ function preview(conversation: Conversation, myUserId: string): string {
     return `${prefix}${emoji} ${label}${last.text ? ` — ${last.text}` : ""}`;
   }
   if (last.type === "CALL") return callPreview(last, myUserId);
+  if (last.type === "GROUP_CALL") return `${prefix}📞 Appel de groupe`;
   if (last.type === "CONTACT_SHARE") return `${prefix}👤 Contact partagé`;
   if (last.type === "LOCATION") return `${prefix}📍 Position`;
   // STICKER : `last.text` porte déjà directement l'emoji (voir Message.text

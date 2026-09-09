@@ -98,7 +98,9 @@ export const MESSAGE_INCLUDE = {
   // directement ici plutôt qu'hydratée à la demande comme VOICE/CALL/
   // CONTACT_SHARE : pas de contenu volumineux à différer, l'afficher tout de
   // suite évite un aller-retour réseau supplémentaire pour si peu.
-  location: { select: { latitude: true, longitude: true } },
+  location: {
+    select: { latitude: true, longitude: true, isLive: true, expiresAt: true, endedAt: true },
+  },
 } satisfies Prisma.MessageInclude;
 
 type MessageAttachment = {
@@ -126,7 +128,13 @@ type MessageWithReads = Message & {
     text: string | null;
     deletedAt: Date | null;
   } | null;
-  location?: { latitude: number; longitude: number } | null;
+  location?: {
+    latitude: number;
+    longitude: number;
+    isLive: boolean;
+    expiresAt: Date | null;
+    endedAt: Date | null;
+  } | null;
 };
 
 export function toMessageDto(message: MessageWithReads, cloudinary: CloudinaryProvider) {
@@ -172,10 +180,20 @@ export function toMessageDto(message: MessageWithReads, cloudinary: CloudinaryPr
     // URL authentifiée, jamais la clé de stockage interne (même principe que
     // VoiceService/StatusesService) — vide pour un message sans pièce jointe.
     attachments: (message.attachments ?? []).map((a) => toAttachmentDto(a, cloudinary)),
-    // Uniquement renseigné pour type LOCATION (voir Message.location, une
-    // seule capture au moment de l'envoi, jamais mise à jour ensuite).
+    // Uniquement renseigné pour type LOCATION. `isLive` : position en
+    // direct, mise à jour en place via PATCH /messages/:id/location (voir
+    // updateLiveLocation) plutôt que par un nouveau message à chaque fois.
+    // `expiresAt` : fin naturelle prévue à l'envoi ; `endedAt` : arrêt
+    // anticipé explicite (voir stopLiveLocation) — les deux `null` pour une
+    // position ponctuelle.
     location: message.location
-      ? { latitude: message.location.latitude, longitude: message.location.longitude }
+      ? {
+          latitude: message.location.latitude,
+          longitude: message.location.longitude,
+          isLive: message.location.isLive,
+          expiresAt: message.location.expiresAt,
+          endedAt: message.location.endedAt,
+        }
       : null,
     createdAt: message.createdAt,
   };
@@ -621,14 +639,20 @@ export class MessagesService {
   }
 
   /**
-   * Position ponctuelle (section "partage de position") — une seule capture
-   * au moment de l'envoi, jamais mise à jour ensuite (pas de "position en
-   * direct", hors périmètre). Les coordonnées elles-mêmes sont déjà
-   * validées en forme par SendLocationMessageDto (@IsLatitude/@IsLongitude) ;
-   * rien de plus à vérifier ici, contrairement à un fichier uploadé.
+   * Position ponctuelle OU en direct (section "partage de position") selon
+   * `dto.isLive`. Une position en direct n'est jamais recréée à chaque
+   * déplacement : une seule bulle, mise à jour en place via
+   * updateLiveLocation ci-dessous jusqu'à expiration naturelle
+   * (`expiresAt`, calculée une fois ici) ou arrêt anticipé explicite
+   * (stopLiveLocation). Les coordonnées elles-mêmes sont déjà validées en
+   * forme par SendLocationMessageDto (@IsLatitude/@IsLongitude).
    */
   async sendLocation(userId: string, dto: SendLocationMessageDto): Promise<MessageDto> {
     await this.assertMembership(userId, dto.conversationId);
+
+    if (dto.isLive && !dto.durationSeconds) {
+      throw new BadRequestException('Une durée est requise pour une position en direct.');
+    }
 
     if (dto.replyToId) {
       const replyTarget = await this.prisma.message.findUnique({ where: { id: dto.replyToId } });
@@ -641,6 +665,8 @@ export class MessagesService {
 
     const recipients = await this.otherMemberIds(dto.conversationId, userId);
     const deliveredAt = recipients.some((id) => this.presence.isOnline(id)) ? new Date() : null;
+    const isLive = dto.isLive ?? false;
+    const expiresAt = isLive ? new Date(Date.now() + dto.durationSeconds! * 1000) : null;
 
     const [message] = await this.prisma.$transaction([
       this.prisma.message.create({
@@ -650,7 +676,9 @@ export class MessagesService {
           type: 'LOCATION',
           replyToId: dto.replyToId,
           deliveredAt,
-          location: { create: { latitude: dto.latitude, longitude: dto.longitude } },
+          location: {
+            create: { latitude: dto.latitude, longitude: dto.longitude, isLive, expiresAt },
+          },
         },
         include: MESSAGE_INCLUDE,
       }),
@@ -668,12 +696,94 @@ export class MessagesService {
           conversationId: dto.conversationId,
           messageId: message.id,
           senderId: userId,
-          preview: '📍 Position',
+          preview: isLive ? '📍 Position en direct' : '📍 Position',
         }),
       ),
     );
 
     return toMessageDto(message, this.cloudinary);
+  }
+
+  /**
+   * Met à jour la position d'un partage en direct déjà en cours — jamais un
+   * nouveau message, voir le commentaire sur sendLocation. Seul
+   * l'expéditeur original peut mettre à jour SA position (jamais un autre
+   * membre de la conversation) ; refusé silencieusement (pas d'erreur
+   * bruyante) si le partage a déjà expiré ou a été arrêté, un dernier
+   * `watchPosition` en vol côté client après la fin ne doit jamais planter.
+   */
+  async updateLiveLocation(
+    userId: string,
+    messageId: string,
+    dto: { latitude: number; longitude: number },
+  ): Promise<MessageDto> {
+    const message = await this.requireLiveLocationOwnedBy(userId, messageId);
+    if (!this.isLiveLocationActive(message)) {
+      return toMessageDto(message, this.cloudinary);
+    }
+
+    await this.prisma.locationMessage.update({
+      where: { messageId },
+      data: { latitude: dto.latitude, longitude: dto.longitude },
+    });
+
+    const updated = await this.prisma.message.findUniqueOrThrow({
+      where: { id: messageId },
+      include: MESSAGE_INCLUDE,
+    });
+    const dtoOut = toMessageDto(updated, this.cloudinary);
+    const recipients = await this.otherMemberIds(message.conversationId, userId);
+    this.events.emitToUsers([...recipients, userId], 'message:updated', dtoOut);
+    return dtoOut;
+  }
+
+  /** Arrêt anticipé explicite d'une position en direct — voir updateLiveLocation. Idempotent : arrêter un partage déjà terminé ne fait rien de plus. */
+  async stopLiveLocation(userId: string, messageId: string): Promise<MessageDto> {
+    const message = await this.requireLiveLocationOwnedBy(userId, messageId);
+    if (this.isLiveLocationActive(message)) {
+      await this.prisma.locationMessage.update({
+        where: { messageId },
+        data: { endedAt: new Date() },
+      });
+    }
+
+    const updated = await this.prisma.message.findUniqueOrThrow({
+      where: { id: messageId },
+      include: MESSAGE_INCLUDE,
+    });
+    const dtoOut = toMessageDto(updated, this.cloudinary);
+    const recipients = await this.otherMemberIds(message.conversationId, userId);
+    this.events.emitToUsers([...recipients, userId], 'message:updated', dtoOut);
+    return dtoOut;
+  }
+
+  private isLiveLocationActive(message: MessageWithReads): boolean {
+    const location = message.location;
+    if (!location?.isLive || location.endedAt) return false;
+    return !location.expiresAt || location.expiresAt.getTime() > Date.now();
+  }
+
+  private async requireLiveLocationOwnedBy(
+    userId: string,
+    messageId: string,
+  ): Promise<MessageWithReads> {
+    const message = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      include: MESSAGE_INCLUDE,
+    });
+    // 404-jamais-403 (section 23) : un message introuvable, d'un autre
+    // type, ou dont on n'est pas l'expéditeur sont tous traités pareil —
+    // jamais de distinction qui confirmerait à un tiers l'existence d'un
+    // partage de position qui ne le concerne pas.
+    if (
+      !message ||
+      message.type !== 'LOCATION' ||
+      !message.location?.isLive ||
+      message.senderId !== userId
+    ) {
+      throw new NotFoundException('Partage de position en direct introuvable.');
+    }
+    return message;
   }
 
   /**

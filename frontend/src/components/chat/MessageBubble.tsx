@@ -7,12 +7,13 @@ import { CheckCheckIcon, CheckIcon, ExpandIcon, FlagIcon, MapPinIcon, PersonIcon
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { ReportModal } from "@/components/ReportModal";
 import { api, ApiError } from "@/lib/api";
-import { displayName, quotedMessagePreview, timeOfDay } from "@/lib/format";
-import { osmLocationUrl } from "@/lib/osm-tile";
+import { displayName, quotedMessagePreview, shortRelativeTime, timeOfDay } from "@/lib/format";
+import { googleMapsUrl } from "@/lib/osm-tile";
 import type {
   CallDetail,
   ContactStatus,
   ConversationParticipant,
+  GroupCallDetail,
   GroupSystemAction,
   Message,
   PublicUser,
@@ -79,6 +80,22 @@ function formatCallDuration(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+/** Un partage en direct est actif tant qu'il n'a pas été arrêté explicitement (endedAt) NI expiré naturellement (expiresAt) — jamais pour une position ponctuelle (isLive false), toujours "figée", jamais "active". */
+function isLiveLocationActive(location: { isLive: boolean; expiresAt: string | null; endedAt: string | null }): boolean {
+  if (!location.isLive || location.endedAt) return false;
+  return !location.expiresAt || new Date(location.expiresAt).getTime() > Date.now();
+}
+
+/** Même principe que callBubbleLabel ci-dessous, pour un appel de groupe — jamais de notion d'appelant/appelé ici, seulement "j'ai déjà rejoint ou non". */
+function groupCallBubbleLabel(call: GroupCallDetail, myUserId: string): string {
+  const prefix = call.type === "VIDEO" ? "Appel vidéo de groupe" : "Appel de groupe";
+  if (call.status === "ENDED") return `${prefix} terminé`;
+  const amJoined = call.participants.some((p) => p.userId === myUserId && p.status === "JOINED");
+  if (amJoined) return `${prefix} en cours`;
+  const joinedCount = call.participants.filter((p) => p.status === "JOINED").length;
+  return `${prefix} en cours · ${joinedCount} participant${joinedCount > 1 ? "s" : ""}`;
 }
 
 /** `own` = j'ai initié l'appel (senderId du message CALL, toujours l'appelant) — voir Call.callerId côté backend. */
@@ -213,6 +230,8 @@ export function MessageBubble({
   myLanguageCode,
   onDeleteVoice,
   onCallBack,
+  onJoinGroupCall,
+  onStopLiveLocation,
   onReply,
   onJumpToMessage,
 }: {
@@ -232,6 +251,10 @@ export function MessageBubble({
   onDeleteVoice?: (messageId: string) => void;
   /** Relance un appel du même type — bouton "rappeler" affiché uniquement sur un appel manqué (voir plus bas). */
   onCallBack?: (kind: "AUDIO" | "VIDEO") => void;
+  /** Rejoint un appel de groupe déjà en cours — bouton affiché tant que je n'y ai pas encore rejoint moi-même (voir groupCallBubbleLabel). */
+  onJoinGroupCall?: (groupCallId: string, conversationId: string, kind: "AUDIO" | "VIDEO") => void;
+  /** Arrête un partage de position en direct — bouton affiché uniquement sur SA PROPRE bulle de partage actif (voir chat/page.tsx::liveLocation). */
+  onStopLiveLocation?: () => void;
   /** Déclenché par le geste de glissement ou le bouton "Répondre" (voir SwipeToReply) — jamais pour un message système. */
   onReply: (message: Message) => void;
   /** Clic sur l'aperçu cité : saute au message original (réutilise le même mécanisme que la recherche, voir chat/page.tsx::jumpToMessage). */
@@ -397,6 +420,29 @@ export function MessageBubble({
               </button>
             )}
           </div>
+        ) : message.type === "GROUP_CALL" ? (
+          <div
+            className={`flex items-center gap-2.5 rounded-2xl px-3.5 py-2.5 text-sm ${
+              own
+                ? "rounded-br-md bg-gradient-to-r from-[var(--accent)] to-[var(--accent-2)] text-[var(--accent-contrast)]"
+                : "rounded-bl-md border border-border bg-surface-raised text-foreground"
+            }`}
+          >
+            {message.groupCall?.type === "VIDEO" ? <VideoIcon size={16} /> : <PhoneIcon size={16} />}
+            <span>{message.groupCall ? groupCallBubbleLabel(message.groupCall, myUserId) : "Appel de groupe"}</span>
+            {message.groupCall?.status === "ACTIVE" &&
+              !message.groupCall.participants.some((p) => p.userId === myUserId && p.status === "JOINED") &&
+              onJoinGroupCall && (
+                <button
+                  onClick={() => onJoinGroupCall(message.groupCall!.id, message.conversationId, message.groupCall!.type)}
+                  className={`ml-1 shrink-0 rounded-full px-2.5 py-1 text-xs font-medium transition ${
+                    own ? "bg-white/20 hover:bg-white/30" : "bg-surface hover:bg-border"
+                  }`}
+                >
+                  Rejoindre
+                </button>
+              )}
+          </div>
         ) : message.type === "CONTACT_SHARE" ? (
           message.sharedContact ? (
             <ContactShareCard contact={message.sharedContact} own={own} />
@@ -407,18 +453,40 @@ export function MessageBubble({
             </div>
           )
         ) : message.type === "LOCATION" && message.location ? (
-          <a
-            href={osmLocationUrl(message.location.latitude, message.location.longitude)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block w-56 overflow-hidden rounded-2xl border border-border bg-surface-raised transition hover:opacity-90"
-          >
-            <LocationPreview latitude={message.location.latitude} longitude={message.location.longitude} height={140} />
-            <p className="flex items-center gap-1.5 px-3 py-2 text-xs text-muted">
-              <MapPinIcon size={13} />
-              Position partagée
-            </p>
-          </a>
+          <div className="w-56 overflow-hidden rounded-2xl border border-border bg-surface-raised">
+            <a
+              href={googleMapsUrl(message.location.latitude, message.location.longitude)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="relative block transition hover:opacity-90"
+            >
+              <LocationPreview latitude={message.location.latitude} longitude={message.location.longitude} height={140} />
+              {isLiveLocationActive(message.location) && (
+                <span className="absolute top-2 left-2 flex items-center gap-1 rounded-full bg-danger px-2 py-0.5 text-[10px] font-semibold text-white">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+                  EN DIRECT
+                </span>
+              )}
+            </a>
+            <div className="flex items-center gap-1.5 px-3 py-2 text-xs text-muted">
+              <MapPinIcon size={13} className="shrink-0" />
+              <span className="min-w-0 flex-1 truncate">
+                {!message.location.isLive
+                  ? "Position partagée"
+                  : isLiveLocationActive(message.location)
+                    ? `En direct · se termine dans ${shortRelativeTime(message.location.expiresAt!)}`
+                    : "Partage de position en direct terminé"}
+              </span>
+            </div>
+            {own && isLiveLocationActive(message.location) && onStopLiveLocation && (
+              <button
+                onClick={onStopLiveLocation}
+                className="w-full border-t border-border px-3 py-2 text-center text-xs font-medium text-danger transition hover:bg-danger/10"
+              >
+                Arrêter le partage
+              </button>
+            )}
+          </div>
         ) : message.type === "STICKER" ? (
           // Aucun fond de bulle (comme WhatsApp) : le sticker (gros emoji, voir
           // MessageType.STICKER côté backend) est déjà visuellement complet en

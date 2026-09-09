@@ -25,7 +25,15 @@ export function locationTile(
   };
 }
 
-/** Ouvre la position dans OpenStreetMap (aucune clé requise, contrairement à Google Maps) — voir MessageBubble. */
-export function osmLocationUrl(latitude: number, longitude: number): string {
-  return `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=16/${latitude}/${longitude}`;
+/**
+ * Ouvre la position dans Google Maps — demandé explicitement (par défaut),
+ * possible sans aucune clé API : ce lien de recherche public
+ * (`google.com/maps/search`) n'est pas un appel à l'API Google Maps
+ * (facturée, nécessite une clé), juste une URL classique du site, au même
+ * titre que copier-coller des coordonnées dans la barre de recherche. Voir
+ * MessageBubble ; la vignette de la bulle reste servie par OpenStreetMap
+ * (locationTile ci-dessus), seul le lien "ouvrir" change.
+ */
+export function googleMapsUrl(latitude: number, longitude: number): string {
+  return `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`;
 }

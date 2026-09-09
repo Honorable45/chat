@@ -28,6 +28,8 @@ export function quotedMessagePreview(m: {
       return "🎤 Message vocal";
     case "CALL":
       return "📞 Appel";
+    case "GROUP_CALL":
+      return "📞 Appel de groupe";
     case "CONTACT_SHARE":
       return "👤 Contact partagé";
     case "LOCATION":

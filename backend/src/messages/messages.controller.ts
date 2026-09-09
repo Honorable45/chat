@@ -38,6 +38,7 @@ import { SendImageMessageDto } from './dto/send-image-message.dto';
 import { SendLocationMessageDto } from './dto/send-location-message.dto';
 import { SendMediaMessageDto } from './dto/send-media-message.dto';
 import { SendStickerMessageDto } from './dto/send-sticker-message.dto';
+import { UpdateLiveLocationDto } from './dto/update-live-location.dto';
 import { UpdateMessageDto } from './dto/update-message.dto';
 import { MessagesService } from './messages.service';
 
@@ -103,6 +104,22 @@ export class MessagesController {
   @Post('messages/sticker')
   sendSticker(@CurrentUser() user: AuthenticatedUser, @Body() dto: SendStickerMessageDto) {
     return this.messages.sendSticker(user.userId, dto);
+  }
+
+  /** Position en direct uniquement (voir MessagesService.updateLiveLocation) — sans effet sur une position ponctuelle, qui n'est jamais mise à jour. */
+  @Patch('messages/:id/location')
+  updateLiveLocation(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateLiveLocationDto,
+  ) {
+    return this.messages.updateLiveLocation(user.userId, id, dto);
+  }
+
+  @Post('messages/:id/location/stop')
+  @HttpCode(HttpStatus.OK)
+  stopLiveLocation(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.messages.stopLiveLocation(user.userId, id);
   }
 
   // Limite globale par défaut (60/min, voir app.module.ts) beaucoup trop
