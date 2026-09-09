@@ -284,8 +284,17 @@ export function VoiceMessageBubble({
   // réception préférée, si elle diffère de la langue détectée (inutile de
   // traduire vers la langue déjà parlée — même règle que le pipeline
   // backend, voir VoiceTranslationPipelineService.resolveTargetLanguages).
-  const relevantTranslation =
-    myLanguageCode && voice?.detectedLanguage?.code !== myLanguageCode
+  // Sur SON PROPRE message envoyé, "myLanguageCode" ne veut rien dire : je
+  // n'ai jamais besoin d'une traduction vers ma propre langue, celle que je
+  // viens de parler — sans quoi "Écouter/Afficher la traduction" restait
+  // systématiquement désactivé sur ses propres vocaux dès que la langue
+  // détectée correspondait à sa langue de réception (bug réel constaté en
+  // prod). On affiche alors la traduction destinée à l'autre participant à
+  // la place — la seule qui existe déjà en pratique pour une conversation
+  // DIRECT (le pipeline ne traduit jamais vers la langue déjà parlée).
+  const relevantTranslation = own
+    ? voice?.translations.find((t) => t.status === "COMPLETED" && t.audioUrl) ?? voice?.translations[0]
+    : myLanguageCode && voice?.detectedLanguage?.code !== myLanguageCode
       ? voice?.translations.find((t) => t.targetLanguage.code === myLanguageCode)
       : undefined;
   const hasTranslationContent = Boolean(voice?.transcript || relevantTranslation);
