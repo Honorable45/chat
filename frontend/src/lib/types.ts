@@ -174,6 +174,10 @@ export interface CallDetail {
   answeredAt: string | null;
   endedAt: string | null;
   durationSeconds: number | null;
+  /** Langue principale (« langue d'envoi ») de chaque partie — sert à pré-remplir
+   * le sélecteur « recevoir en… » de l'appel. `null` si non renseignée. */
+  callerLanguage: string | null;
+  calleeLanguage: string | null;
 }
 
 /** Vue "message" d'un appel — jamais fournie par GET /conversations/:id/messages

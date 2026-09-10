@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckIcon, LanguagesIcon, MoreVerticalIcon, PauseIcon, PlayIcon, TrashIcon } from "@/components/icons";
 import { api, isOwnBackendUrl, resolveMediaSrc } from "@/lib/api";
 import { formatDuration } from "@/lib/format";
+import { loadLanguages } from "@/lib/languages";
 import { getAccessToken } from "@/lib/token-store";
 import type { LanguageSummary, VoiceDetails } from "@/lib/types";
 
@@ -24,14 +25,6 @@ function decorativeBars(seed: string, count = 28): number[] {
   }
   return bars;
 }
-
-// Registre des langues chargé une seule fois pour toutes les bulles vocales
-// (GET /languages est public et stable) — évite un aller-retour réseau à
-// chaque ouverture du sélecteur. La dernière langue choisie sert ensuite de
-// suggestion (jamais de traduction automatique : rien n'est traduit tant que
-// l'utilisateur n'a pas explicitement choisi une langue).
-let languagesCache: LanguageSummary[] | null = null;
-let languagesPromise: Promise<LanguageSummary[]> | null = null;
 
 // Dernière langue de traduction choisie — gardée dans localStorage (et non
 // une variable de module, que les règles React interdisent de muter hors
@@ -57,20 +50,6 @@ function rememberLanguage(code: string): void {
   }
 }
 
-function loadLanguages(): Promise<LanguageSummary[]> {
-  if (languagesCache) return Promise.resolve(languagesCache);
-  languagesPromise ??= api.languages
-    .list()
-    .then((list) => {
-      languagesCache = list;
-      return list;
-    })
-    .catch(() => {
-      languagesPromise = null;
-      return [];
-    });
-  return languagesPromise;
-}
 
 /**
  * `audioUrl` vient toujours du DTO (voir VoiceDetails/MessageTranslationDetail
@@ -211,7 +190,7 @@ export function VoiceMessageBubble({
   // pré-remplie : la suggestion (langue préférée / dernière choisie) ne fait
   // que remonter en tête du sélecteur.
   const [selectedLang, setSelectedLang] = useState<string | null>(null);
-  const [languages, setLanguages] = useState<LanguageSummary[]>(languagesCache ?? []);
+  const [languages, setLanguages] = useState<LanguageSummary[]>([]);
   const [requesting, setRequesting] = useState(false);
   const [requestFailed, setRequestFailed] = useState(false);
   // Suggestion mise en tête du sélecteur : dernière langue choisie

@@ -74,11 +74,33 @@ function toHistoryEntry(
 
 export type CallHistoryEntry = ReturnType<typeof toHistoryEntry>;
 
-type CallWithMessage = Call & {
-  message: { conversationId: string; senderId: string; sentAt: Date; createdAt: Date };
+/**
+ * Langue principale de chaque participant — la « langue d'envoi » de l'appel.
+ * Sert côté client à pré-remplir le sélecteur « recevoir en… » de l'appel
+ * entrant (par défaut : la langue d'envoi de l'interlocuteur, donc aucune
+ * traduction tant qu'elle n'est pas changée — voir CallTranslationService).
+ */
+const CALL_LANGUAGE_INCLUDE = {
+  caller: { select: { primaryLanguage: { select: { code: true } } } },
+  callee: { select: { primaryLanguage: { select: { code: true } } } },
+} satisfies Prisma.CallInclude;
+
+const CALL_WITH_MESSAGE_INCLUDE = {
+  message: { select: { conversationId: true, senderId: true, sentAt: true, createdAt: true } },
+  ...CALL_LANGUAGE_INCLUDE,
+} satisfies Prisma.CallInclude;
+
+type CallLanguages = {
+  caller?: { primaryLanguage: { code: string } | null } | null;
+  callee?: { primaryLanguage: { code: string } | null } | null;
 };
 
-function toCallDto(call: Call) {
+type CallWithMessage = Call &
+  CallLanguages & {
+    message: { conversationId: string; senderId: string; sentAt: Date; createdAt: Date };
+  };
+
+function toCallDto(call: Call & CallLanguages) {
   return {
     id: call.id,
     messageId: call.messageId,
@@ -93,6 +115,10 @@ function toCallDto(call: Call) {
       call.answeredAt && call.endedAt
         ? Math.round((call.endedAt.getTime() - call.answeredAt.getTime()) / 1000)
         : null,
+    // Langue d'envoi de chaque partie (profil) — jamais la langue de
+    // réception choisie, qui reste en mémoire côté CallTranslationService.
+    callerLanguage: call.caller?.primaryLanguage?.code ?? null,
+    calleeLanguage: call.callee?.primaryLanguage?.code ?? null,
   };
 }
 
@@ -176,7 +202,7 @@ export class CallsService {
         type: 'CALL',
         call: { create: { callerId, calleeId, type, status: 'RINGING' } },
       },
-      include: { call: true },
+      include: { call: { include: CALL_LANGUAGE_INCLUDE } },
     });
     await this.prisma.conversation.update({
       where: { id: conversationId },
@@ -227,11 +253,7 @@ export class CallsService {
     const updated = await this.prisma.call.update({
       where: { id: callId },
       data: { status: 'ACTIVE', answeredAt: new Date() },
-      include: {
-        message: {
-          select: { conversationId: true, senderId: true, sentAt: true, createdAt: true },
-        },
-      },
+      include: CALL_WITH_MESSAGE_INCLUDE,
     });
     return this.fromUpdated(updated);
   }
@@ -248,11 +270,7 @@ export class CallsService {
     const updated = await this.prisma.call.update({
       where: { id: callId },
       data: { status: 'DECLINED', endedAt: new Date() },
-      include: {
-        message: {
-          select: { conversationId: true, senderId: true, sentAt: true, createdAt: true },
-        },
-      },
+      include: CALL_WITH_MESSAGE_INCLUDE,
     });
     return this.fromUpdated(updated);
   }
@@ -270,11 +288,7 @@ export class CallsService {
     const updated = await this.prisma.call.update({
       where: { id: callId },
       data: { status: 'MISSED', endedAt: new Date() },
-      include: {
-        message: {
-          select: { conversationId: true, senderId: true, sentAt: true, createdAt: true },
-        },
-      },
+      include: CALL_WITH_MESSAGE_INCLUDE,
     });
     await this.notifyMissed(updated);
     return this.fromUpdated(updated);
@@ -292,11 +306,7 @@ export class CallsService {
     const updated = await this.prisma.call.update({
       where: { id: callId },
       data: { status: 'ENDED', endedAt: new Date() },
-      include: {
-        message: {
-          select: { conversationId: true, senderId: true, sentAt: true, createdAt: true },
-        },
-      },
+      include: CALL_WITH_MESSAGE_INCLUDE,
     });
     return this.fromUpdated(updated);
   }
@@ -382,11 +392,7 @@ export class CallsService {
       const updated = await this.prisma.call.update({
         where: { id: call.id },
         data: { status, endedAt: new Date() },
-        include: {
-          message: {
-            select: { conversationId: true, senderId: true, sentAt: true, createdAt: true },
-          },
-        },
+        include: CALL_WITH_MESSAGE_INCLUDE,
       });
       if (status === 'MISSED') {
         await this.notifyMissed(updated);
@@ -443,11 +449,7 @@ export class CallsService {
   async getById(userId: string, callId: string): Promise<CallMessageDto> {
     const call = await this.prisma.call.findUnique({
       where: { id: callId },
-      include: {
-        message: {
-          select: { conversationId: true, senderId: true, sentAt: true, createdAt: true },
-        },
-      },
+      include: CALL_WITH_MESSAGE_INCLUDE,
     });
     if (!call || (call.callerId !== userId && call.calleeId !== userId)) {
       throw new NotFoundException('Appel introuvable.');
@@ -484,11 +486,7 @@ export class CallsService {
   async getByMessageId(userId: string, messageId: string): Promise<CallMessageDto> {
     const call = await this.prisma.call.findUnique({
       where: { messageId },
-      include: {
-        message: {
-          select: { conversationId: true, senderId: true, sentAt: true, createdAt: true },
-        },
-      },
+      include: CALL_WITH_MESSAGE_INCLUDE,
     });
     if (!call) {
       throw new NotFoundException('Appel introuvable.');
@@ -586,7 +584,7 @@ export class CallsService {
     senderId: string,
     sentAt: Date,
     createdAt: Date,
-    call: Call,
+    call: Call & CallLanguages,
   ): CallMessageDto {
     return { id, conversationId, senderId, type: 'CALL', sentAt, createdAt, call: toCallDto(call) };
   }

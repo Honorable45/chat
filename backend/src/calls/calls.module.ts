@@ -3,8 +3,11 @@ import { JwtModule } from '@nestjs/jwt';
 import { AuthModule } from '../auth/auth.module';
 import { ContactsModule } from '../contacts/contacts.module';
 import { GroupCallsModule } from '../group-calls/group-calls.module';
+import { LanguagesModule } from '../languages/languages.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PushModule } from '../push/push.module';
+import { TranslationsModule } from '../translations/translations.module';
+import { CallTranslationService } from './call-translation.service';
 import { CallsController } from './calls.controller';
 import { CallsGateway } from './calls.gateway';
 import { CallsService } from './calls.service';
@@ -31,9 +34,11 @@ import { CallsService } from './calls.service';
     PushModule,
     ContactsModule,
     GroupCallsModule,
+    LanguagesModule, // CallTranslationService valide les codes de langue de réception
+    TranslationsModule, // CallTranslationService : STT + traduction + synthèse vocale des fragments d'appel
   ],
   controllers: [CallsController],
-  providers: [CallsService, CallsGateway],
+  providers: [CallsService, CallsGateway, CallTranslationService],
   exports: [CallsService],
 })
 export class CallsModule {}

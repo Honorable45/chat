@@ -20,6 +20,7 @@ import { SettingsPage } from "@/components/settings/SettingsPage";
 import { StatusesPanel } from "@/components/statuses/StatusesPanel";
 import { api, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { useLanguages } from "@/lib/languages";
 import { readMediaMeta } from "@/lib/media-metadata";
 import { normalizeIncomingMessage } from "@/lib/normalize-message";
 import { useSocket } from "@/lib/socket";
@@ -641,6 +642,8 @@ function ChatPageInner() {
     [refreshConversations],
   );
 
+  const languages = useLanguages();
+
   const call = useCall(Boolean(user), applyCallMessage, (groupCallMessage) => {
     applyGroupCallMessage(groupCallMessage);
     void groupCall.startFromUpgrade(groupCallMessage, user!.id);
@@ -1095,7 +1098,7 @@ function ChatPageInner() {
           error={call.error}
           remoteVideoRef={call.remoteVideoRef}
           localVideoRef={call.localVideoRef}
-          onAccept={() => void call.accept()}
+          onAccept={(receiveLanguage) => void call.accept(receiveLanguage)}
           onReject={() => void call.reject()}
           onHangUp={() => void call.hangUp()}
           onToggleMute={call.toggleMute}
@@ -1103,6 +1106,11 @@ function ChatPageInner() {
           onMinimize={() => setCallMinimized(true)}
           onEscalate={(inviteeId) => void handleEscalateCall(inviteeId)}
           escalateCandidates={callEscalateCandidates}
+          languages={languages}
+          otherPartyLanguage={call.otherPartyLanguage}
+          receiveLanguage={call.receiveLanguage}
+          subtitles={call.subtitles}
+          onSetReceiveLanguage={(language) => void call.setReceiveLanguage(language)}
         />
       )}
 

@@ -12,6 +12,119 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "http://localhost:4000";
 export type CallPhase = "idle" | "outgoing" | "incoming" | "active" | "ended";
 export type CallKind = "AUDIO" | "VIDEO";
 
+/** Une réplique traduite pendant l'appel — voir CallsGateway.handleSpeechChunk. */
+export interface CallSubtitle {
+  seq: number;
+  /** Vrai si c'est MOI qui ai parlé (sous-titre de confirmation de ma propre phrase). */
+  mine: boolean;
+  original: string;
+  translated: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+}
+
+// Fenêtre d'un fragment de voix envoyé pour traduction (~5 s) : compromis
+// entre latence (plus court = plus réactif) et qualité de transcription
+// (trop court = phrases coupées).
+const SPEECH_CHUNK_MS = 5000;
+// Volume du flux WebRTC d'origine quand une traduction est active : assez bas
+// pour laisser la voix traduite au premier plan, pas coupé (repli si la
+// traduction d'un fragment échoue).
+const DUCKED_REMOTE_VOLUME = 0.12;
+const MAX_SUBTITLES = 4;
+
+function pickAudioMime(): string {
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
+  return candidates.find((c) => MediaRecorder.isTypeSupported(c)) ?? "";
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      resolve(result.slice(result.indexOf(",") + 1));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("lecture du fragment audio impossible"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Capture la voix locale par fragments complets et indépendants (~5 s) — un
+ * MediaRecorder recyclé à chaque tour plutôt qu'un seul en continu : un
+ * segment WebM/Opus produit « au fil de l'eau » n'est pas décodable seul,
+ * alors que la transcription (STT) a besoin d'un conteneur valide par requête.
+ * Best-effort de bout en bout : si MediaRecorder n'est pas disponible ou
+ * refuse le format, la capture s'arrête sans bruit (l'appel continue).
+ */
+class CallSpeechCapture {
+  private stopped = false;
+  private recorder: MediaRecorder | null = null;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(
+    private readonly stream: MediaStream,
+    private readonly onChunk: (blob: Blob) => void,
+  ) {}
+
+  start(): void {
+    this.cycle();
+  }
+
+  stop(): void {
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
+    if (this.recorder && this.recorder.state !== "inactive") {
+      try {
+        this.recorder.stop();
+      } catch {
+        // déjà arrêté
+      }
+    }
+    this.recorder = null;
+  }
+
+  private cycle(): void {
+    if (this.stopped) return;
+    const tracks = this.stream.getAudioTracks();
+    if (tracks.length === 0) {
+      this.timer = setTimeout(() => this.cycle(), SPEECH_CHUNK_MS);
+      return;
+    }
+
+    let recorder: MediaRecorder;
+    try {
+      const mime = pickAudioMime();
+      recorder = new MediaRecorder(
+        new MediaStream(tracks),
+        mime ? { mimeType: mime } : undefined,
+      );
+    } catch {
+      this.stopped = true;
+      return;
+    }
+    this.recorder = recorder;
+
+    const parts: BlobPart[] = [];
+    recorder.addEventListener("dataavailable", (e) => {
+      if (e.data.size > 0) parts.push(e.data);
+    });
+    recorder.addEventListener("stop", () => {
+      if (!this.stopped && parts.length > 0) {
+        this.onChunk(new Blob(parts, { type: recorder.mimeType || "audio/webm" }));
+      }
+      if (!this.stopped) this.cycle();
+    });
+
+    recorder.start();
+    this.timer = setTimeout(() => {
+      if (recorder.state !== "inactive") recorder.stop();
+    }, SPEECH_CHUNK_MS);
+  }
+}
+
 interface CallSnapshot {
   phase: CallPhase;
   conversationId: string | null;
@@ -37,6 +150,14 @@ interface CallSnapshot {
    * reçu — voir la note dans toggleVideo() sur pourquoi cet état n'est pas
    * déduit des pistes WebRTC elles-mêmes. */
   remoteVideoEnabled: boolean;
+  /** Langue d'envoi (profil) de l'interlocuteur — défaut du sélecteur « recevoir en… ». */
+  otherPartyLanguage: string | null;
+  /** Langue dans laquelle JE veux entendre l'interlocuteur (`null` = aucune traduction). */
+  receiveLanguage: string | null;
+  /** Langue de réception choisie par l'INTERLOCUTEUR — quand elle est posée, ma voix est capturée et envoyée pour traduction. */
+  remoteReceiveLanguage: string | null;
+  /** Dernières répliques traduites de l'appel (voix + texte). */
+  subtitles: CallSubtitle[];
   /** Message bref affiché en phase "ended" ("Appel refusé.", "Appel manqué."...) — jamais une vraie erreur bloquante. */
   error: string | null;
 }
@@ -52,6 +173,10 @@ const IDLE_SNAPSHOT: CallSnapshot = {
   videoEnabled: false,
   localStream: null,
   remoteVideoEnabled: false,
+  otherPartyLanguage: null,
+  receiveLanguage: null,
+  remoteReceiveLanguage: null,
+  subtitles: [],
   error: null,
 };
 
@@ -113,6 +238,43 @@ export function useCall(
   const onUpgradedToGroupRef = useRef(onUpgradedToGroup);
   const ensurePeerConnectionRef = useRef<(iceServers: RTCIceServer[]) => RTCPeerConnection>(null!);
   const renegotiateRef = useRef<() => void>(() => {});
+  // Traduction d'appel : capture de la voix locale, lecture en file des
+  // répliques traduites reçues, numéro de séquence des fragments envoyés.
+  const speechCaptureRef = useRef<CallSpeechCapture | null>(null);
+  const translatedQueueRef = useRef<HTMLAudioElement[]>([]);
+  const translatedPlayingRef = useRef(false);
+  const chunkSeqRef = useRef(0);
+
+  /** Baisse (ou rétablit) le volume du flux WebRTC d'origine selon qu'une traduction est active pour moi. */
+  const applyRemoteDucking = useCallback(() => {
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.volume = stateRef.current.receiveLanguage ? DUCKED_REMOTE_VOLUME : 1;
+    }
+  }, []);
+
+  const stopTranslationMedia = useCallback(() => {
+    speechCaptureRef.current?.stop();
+    speechCaptureRef.current = null;
+    translatedQueueRef.current.forEach((audio) => audio.pause());
+    translatedQueueRef.current = [];
+    translatedPlayingRef.current = false;
+    chunkSeqRef.current = 0;
+  }, []);
+
+  // Fonction simple (jamais un hook, pas d'auto-référence dans un useCallback) :
+  // ne lit/écrit que des refs, la fermeture capturée une fois par l'effet
+  // socket reste donc toujours valide.
+  function drainTranslatedQueue(): void {
+    const audio = translatedQueueRef.current.shift();
+    if (!audio) {
+      translatedPlayingRef.current = false;
+      return;
+    }
+    translatedPlayingRef.current = true;
+    audio.addEventListener("ended", drainTranslatedQueue, { once: true });
+    audio.addEventListener("error", drainTranslatedQueue, { once: true });
+    void audio.play().catch(() => drainTranslatedQueue());
+  }
 
   // Toujours la dernière callback fournie par l'appelant, jamais lue
   // pendant le rendu (react-hooks/refs) — seulement depuis les handlers
@@ -130,14 +292,18 @@ export function useCall(
   }, []);
 
   const cleanupMedia = useCallback(() => {
+    stopTranslationMedia();
     pcRef.current?.close();
     pcRef.current = null;
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
     answeredAtRef.current = null;
-    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+      remoteVideoRef.current.volume = 1;
+    }
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
-  }, []);
+  }, [stopTranslationMedia]);
 
   const reset = useCallback(() => {
     cleanupMedia();
@@ -204,6 +370,7 @@ export function useCall(
       pc.ontrack = (event) => {
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = event.streams[0] ?? null;
+          applyRemoteDucking();
           void remoteVideoRef.current.play().catch(() => {});
         }
       };
@@ -245,6 +412,11 @@ export function useCall(
         callId: message.call.id,
         otherUserId: message.call.callerId,
         kind: message.call.type,
+        // Langue d'envoi de l'appelant — défaut du sélecteur « recevoir en… ».
+        otherPartyLanguage: message.call.callerLanguage ?? null,
+        receiveLanguage: null,
+        remoteReceiveLanguage: null,
+        subtitles: [],
         error: null,
       });
       onCallMessageRef.current(message);
@@ -260,7 +432,13 @@ export function useCall(
           socket.emit("call:offer", { callId: message.call.id, data: offer });
           armRenegotiation(pc);
           answeredAtRef.current = Date.now();
-          update({ phase: "active", durationSeconds: 0, remoteVideoEnabled: stateRef.current.kind === "VIDEO" });
+          update({
+            phase: "active",
+            durationSeconds: 0,
+            remoteVideoEnabled: stateRef.current.kind === "VIDEO",
+            // Langue d'envoi de l'appelé — défaut du sélecteur côté appelant.
+            otherPartyLanguage: message.call.calleeLanguage ?? stateRef.current.otherPartyLanguage,
+          });
           onCallMessageRef.current(message);
         } catch {
           update({ error: "La connexion a échoué." });
@@ -302,6 +480,59 @@ export function useCall(
       if (stateRef.current.callId !== payload.callId) return;
       update({ remoteVideoEnabled: payload.data.enabled });
     });
+
+    // L'interlocuteur a choisi/retiré une langue de réception : quand elle
+    // est posée, il faut capturer ma voix et l'envoyer pour traduction (voir
+    // l'effet de capture plus bas).
+    socket.on(
+      "call:language-changed",
+      (payload: { callId: string; userId: string; language: string | null }) => {
+        if (stateRef.current.callId !== payload.callId) return;
+        if (payload.userId === stateRef.current.otherUserId) {
+          update({ remoteReceiveLanguage: payload.language });
+        }
+      },
+    );
+
+    // Réplique traduite de l'interlocuteur : on lit la voix synthétisée (si
+    // fournie) par-dessus le flux d'origine, déjà atténué (applyRemoteDucking).
+    socket.on(
+      "call:translated-speech",
+      (payload: { callId: string; seq: number; text: string; audio: string | null; mimeType: string | null }) => {
+        if (stateRef.current.callId !== payload.callId || !payload.audio) return;
+        const audio = new Audio(`data:${payload.mimeType ?? "audio/mpeg"};base64,${payload.audio}`);
+        translatedQueueRef.current.push(audio);
+        if (!translatedPlayingRef.current) drainTranslatedQueue();
+      },
+    );
+
+    // Sous-titres (les deux sens) — `speakerId` dit si c'est ma phrase
+    // (confirmation) ou celle de l'interlocuteur (traduction).
+    socket.on(
+      "call:subtitle",
+      (payload: {
+        callId: string;
+        seq: number;
+        speakerId: string;
+        original: string;
+        translated: string;
+        sourceLanguage: string;
+        targetLanguage: string;
+      }) => {
+        if (stateRef.current.callId !== payload.callId) return;
+        const line: CallSubtitle = {
+          seq: payload.seq,
+          mine: payload.speakerId !== stateRef.current.otherUserId,
+          original: payload.original,
+          translated: payload.translated,
+          sourceLanguage: payload.sourceLanguage,
+          targetLanguage: payload.targetLanguage,
+        };
+        update({
+          subtitles: [...stateRef.current.subtitles, line].slice(-MAX_SUBTITLES),
+        });
+      },
+    );
 
     socket.on("call:rejected", (message: CallMessagePayload) => {
       if (stateRef.current.callId !== message.call.id) return;
@@ -375,6 +606,39 @@ export function useCall(
     }
   }, [state.localStream, state.phase, state.videoEnabled]);
 
+  // Capture de la voix locale par fragments, uniquement quand l'appel est
+  // actif ET que l'interlocuteur a choisi une langue de réception (sinon rien
+  // à traduire — on n'envoie aucun fragment inutilement). Chaque fragment
+  // complet part en base64 vers "call:speech-chunk".
+  useEffect(() => {
+    const shouldCapture =
+      state.phase === "active" && !!state.remoteReceiveLanguage && !!localStreamRef.current;
+
+    if (shouldCapture && !speechCaptureRef.current) {
+      const capture = new CallSpeechCapture(localStreamRef.current!, (blob) => {
+        const socket = socketRef.current;
+        const callId = stateRef.current.callId;
+        if (!socket || !callId) return;
+        void blobToBase64(blob)
+          .then((audio) => {
+            chunkSeqRef.current += 1;
+            socket.emit("call:speech-chunk", {
+              callId,
+              audio,
+              mimeType: blob.type || "audio/webm",
+              seq: chunkSeqRef.current,
+            });
+          })
+          .catch(() => {});
+      });
+      capture.start();
+      speechCaptureRef.current = capture;
+    } else if (!shouldCapture && speechCaptureRef.current) {
+      speechCaptureRef.current.stop();
+      speechCaptureRef.current = null;
+    }
+  }, [state.phase, state.remoteReceiveLanguage]);
+
   // Minuteur de durée — dépend volontairement de l'état React (pas de la
   // réf) : c'est le seul endroit où l'on veut vraiment se réabonner à chaque
   // changement de phase.
@@ -437,10 +701,15 @@ export function useCall(
     [cleanupMedia, endWithFeedback, update],
   );
 
-  const accept = useCallback(async () => {
+  const accept = useCallback(async (receiveLanguage?: string | null) => {
     const socket = socketRef.current;
     const { callId, kind } = stateRef.current;
     if (!socket || !callId || stateRef.current.phase !== "incoming") return;
+    // Aucune traduction si la langue de réception choisie est déjà la langue
+    // d'envoi de l'interlocuteur (le défaut du sélecteur) — voir CallOverlay.
+    const wantsTranslation =
+      !!receiveLanguage && receiveLanguage !== stateRef.current.otherPartyLanguage;
+    const chosenLanguage = wantsTranslation ? receiveLanguage : null;
 
     let stream: MediaStream;
     try {
@@ -462,7 +731,7 @@ export function useCall(
     const pc = ensurePeerConnectionRef.current(iceServers);
     stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-    const res = await ack(socket, "call:accept", { callId });
+    const res = await ack(socket, "call:accept", { callId, receiveLanguage: chosenLanguage });
     if (!res.ok) {
       cleanupMedia();
       update({ error: res.error ?? "Impossible de répondre à cet appel." });
@@ -476,9 +745,11 @@ export function useCall(
       videoEnabled: kind === "VIDEO",
       remoteVideoEnabled: kind === "VIDEO",
       localStream: stream,
+      receiveLanguage: chosenLanguage,
     });
+    applyRemoteDucking();
     if (res.callMessage) onCallMessageRef.current(res.callMessage);
-  }, [cleanupMedia, reset, update]);
+  }, [applyRemoteDucking, cleanupMedia, reset, update]);
 
   /**
    * Reprend un appel entrant après ouverture de l'app depuis l'action
@@ -566,6 +837,27 @@ export function useCall(
   }, [update]);
 
   /**
+   * Change la langue dans laquelle J'entends l'interlocuteur — depuis l'écran
+   * d'appel entrant (via accept) ou le menu en cours d'appel. `null` (ou la
+   * langue d'envoi de l'interlocuteur) = pas de traduction. Le backend
+   * prévient l'autre partie (`call:language-changed`) pour qu'elle capture sa
+   * voix.
+   */
+  const setReceiveLanguage = useCallback(
+    async (language: string | null) => {
+      const socket = socketRef.current;
+      const callId = stateRef.current.callId;
+      if (!socket || !callId) return;
+      const normalized =
+        language && language !== stateRef.current.otherPartyLanguage ? language : null;
+      update({ receiveLanguage: normalized, subtitles: [] });
+      applyRemoteDucking();
+      await ack(socket, "call:set-language", { callId, language: normalized });
+    },
+    [applyRemoteDucking, update],
+  );
+
+  /**
    * Active/coupe sa propre caméra en cours d'appel. La toute première
    * activation demande l'accès caméra et ajoute une piste à la connexion
    * (déclenche une renégociation automatique — voir `armRenegotiation`
@@ -622,6 +914,10 @@ export function useCall(
     muted: state.muted,
     videoEnabled: state.videoEnabled,
     remoteVideoEnabled: state.remoteVideoEnabled,
+    otherPartyLanguage: state.otherPartyLanguage,
+    receiveLanguage: state.receiveLanguage,
+    remoteReceiveLanguage: state.remoteReceiveLanguage,
+    subtitles: state.subtitles,
     error: state.error,
     remoteVideoRef,
     localVideoRef,
@@ -633,5 +929,6 @@ export function useCall(
     escalate,
     toggleMute,
     toggleVideo,
+    setReceiveLanguage,
   };
 }

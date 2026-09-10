@@ -2,10 +2,11 @@
 
 import { useState, type RefObject } from "react";
 import { Avatar } from "@/components/Avatar";
-import { ChevronDownIcon, MicIcon, MicOffIcon, PersonIcon, PhoneIcon, PhoneOffIcon, VideoIcon, VideoOffIcon } from "@/components/icons";
+import { ChevronDownIcon, LanguagesIcon, MicIcon, MicOffIcon, PersonIcon, PhoneIcon, PhoneOffIcon, VideoIcon, VideoOffIcon } from "@/components/icons";
 import { displayName } from "@/lib/format";
-import type { CallKind, CallPhase } from "@/lib/use-call";
-import type { ConversationParticipant, PublicUser } from "@/lib/types";
+import { languageLabel } from "@/lib/languages";
+import type { CallKind, CallPhase, CallSubtitle } from "@/lib/use-call";
+import type { ConversationParticipant, LanguageSummary, PublicUser } from "@/lib/types";
 
 // Exportées pour MinimizedCallBar.tsx — jamais dupliquées, même format de
 // durée/statut affiché réduit ou en plein écran.
@@ -63,6 +64,11 @@ export function CallOverlay({
   onMinimize,
   onEscalate,
   escalateCandidates,
+  languages,
+  otherPartyLanguage,
+  receiveLanguage,
+  subtitles,
+  onSetReceiveLanguage,
 }: {
   phase: CallPhase;
   kind: CallKind;
@@ -74,11 +80,22 @@ export function CallOverlay({
   error: string | null;
   remoteVideoRef: RefObject<HTMLVideoElement | null>;
   localVideoRef: RefObject<HTMLVideoElement | null>;
-  onAccept: () => void;
+  /** Reçoit la langue de réception choisie sur l'écran d'appel entrant (`null` = pas de traduction). */
+  onAccept: (receiveLanguage: string | null) => void;
   onReject: () => void;
   onHangUp: () => void;
   onToggleMute: () => void;
   onToggleVideo: () => void;
+  /** Registre des langues (GET /languages) — pour le sélecteur « recevoir en… ». */
+  languages: LanguageSummary[];
+  /** Langue d'envoi de l'interlocuteur — défaut du sélecteur. */
+  otherPartyLanguage: string | null;
+  /** Langue de réception actuellement choisie (`null` = pas de traduction). */
+  receiveLanguage: string | null;
+  /** Dernières répliques traduites. */
+  subtitles: CallSubtitle[];
+  /** Change la langue de réception en cours d'appel (`null` pour couper la traduction). */
+  onSetReceiveLanguage: (language: string | null) => void;
   /** Réduit l'appel en une pastille flottante (voir MinimizedCallBar) —
    * jamais proposé en phase "incoming" : répondre/refuser doit rester la
    * seule action possible tant que l'appel n'a pas été décidé. */
@@ -91,9 +108,20 @@ export function CallOverlay({
   escalateCandidates: PublicUser[];
 }) {
   const [escalateOpen, setEscalateOpen] = useState(false);
+  const [langMenuOpen, setLangMenuOpen] = useState(false);
+  // Langue de réception choisie sur l'écran d'appel entrant, AVANT de
+  // décrocher — `null` = « langue d'origine » (aucune traduction), le défaut.
+  const [pendingLanguage, setPendingLanguage] = useState<string | null>(null);
   const name = peer ? displayName(peer) : "Appel";
   const showRemoteVideo = phase === "active" && remoteVideoEnabled;
   const showLocalPreview = (phase === "active" || phase === "outgoing") && videoEnabled;
+
+  // Langues proposées : tout le registre sauf la langue d'envoi de
+  // l'interlocuteur (la « recevoir » dans sa propre langue = ne pas traduire).
+  const pickableLanguages = languages.filter((l) => l.code !== otherPartyLanguage);
+  const originalLabel = otherPartyLanguage
+    ? `Langue d'origine (${languageLabel(otherPartyLanguage, languages)})`
+    : "Langue d'origine";
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-between bg-black/90 py-14 text-white backdrop-blur-sm">
@@ -125,7 +153,31 @@ export function CallOverlay({
         <p className={`text-sm ${showRemoteVideo ? "text-white drop-shadow-lg" : "text-white/70"}`}>
           {statusLabel(phase, kind, durationSeconds, error)}
         </p>
+        {phase === "active" && receiveLanguage && (
+          <p className="flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1 text-xs text-white/80">
+            <LanguagesIcon size={12} />
+            Traduction en {languageLabel(receiveLanguage, languages)}
+          </p>
+        )}
       </div>
+
+      {phase === "active" && subtitles.length > 0 && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-32 mx-auto flex max-w-lg flex-col gap-1.5 px-4">
+          {subtitles.map((s) => (
+            <div
+              key={`${s.mine ? "m" : "o"}-${s.seq}`}
+              className={`rounded-xl px-3 py-2 text-sm shadow-lg backdrop-blur ${
+                s.mine ? "self-end bg-white/15 text-white/80" : "self-start bg-black/60 text-white"
+              }`}
+            >
+              <span className="mr-1.5 rounded bg-white/15 px-1 py-0.5 text-[10px] font-medium uppercase">
+                {s.mine ? "vous" : s.targetLanguage}
+              </span>
+              {s.translated}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="relative flex items-center gap-6">
         {phase === "active" && escalateOpen && onEscalate && (
@@ -154,6 +206,23 @@ export function CallOverlay({
 
         {phase === "incoming" && (
           <>
+            {pickableLanguages.length > 0 && (
+              <label className="absolute bottom-full mb-4 flex w-64 flex-col gap-1 text-center text-xs text-white/70">
+                Recevoir l&rsquo;appel en
+                <select
+                  value={pendingLanguage ?? ""}
+                  onChange={(e) => setPendingLanguage(e.target.value || null)}
+                  className="rounded-xl border border-white/20 bg-black/50 px-3 py-2 text-sm text-white outline-none"
+                >
+                  <option value="">{originalLabel}</option>
+                  {pickableLanguages.map((l) => (
+                    <option key={l.code} value={l.code}>
+                      {l.nativeName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <button
               onClick={onReject}
               aria-label="Refuser l'appel"
@@ -162,7 +231,7 @@ export function CallOverlay({
               <PhoneOffIcon size={24} />
             </button>
             <button
-              onClick={onAccept}
+              onClick={() => onAccept(pendingLanguage)}
               aria-label="Accepter l'appel"
               className="flex h-14 w-14 items-center justify-center rounded-full bg-[var(--online)] text-white transition hover:opacity-90"
             >
@@ -190,6 +259,37 @@ export function CallOverlay({
           </>
         )}
 
+        {phase === "active" && langMenuOpen && pickableLanguages.length > 0 && (
+          <div className="absolute bottom-full mb-3 w-60 rounded-2xl border border-white/10 bg-surface-raised p-1.5 text-foreground shadow-2xl">
+            <p className="px-2 py-1.5 text-xs font-medium text-muted">Entendre l&rsquo;interlocuteur en</p>
+            <div className="max-h-56 overflow-y-auto glotta-scroll-hidden">
+              <button
+                onClick={() => {
+                  onSetReceiveLanguage(null);
+                  setLangMenuOpen(false);
+                }}
+                className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface"
+              >
+                {originalLabel}
+                {!receiveLanguage && <span className="text-[var(--accent-2)]">✓</span>}
+              </button>
+              {pickableLanguages.map((l) => (
+                <button
+                  key={l.code}
+                  onClick={() => {
+                    onSetReceiveLanguage(l.code);
+                    setLangMenuOpen(false);
+                  }}
+                  className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface"
+                >
+                  {l.nativeName}
+                  {receiveLanguage === l.code && <span className="text-[var(--accent-2)]">✓</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {phase === "active" && (
           <>
             <button
@@ -201,6 +301,17 @@ export function CallOverlay({
             >
               {muted ? <MicOffIcon size={22} /> : <MicIcon size={22} />}
             </button>
+            {pickableLanguages.length > 0 && (
+              <button
+                onClick={() => setLangMenuOpen((v) => !v)}
+                aria-label="Langue de traduction de l'appel"
+                className={`flex h-14 w-14 items-center justify-center rounded-full transition ${
+                  receiveLanguage ? "bg-white text-black" : "bg-white/15 text-white hover:bg-white/25"
+                }`}
+              >
+                <LanguagesIcon size={22} />
+              </button>
+            )}
             <button
               onClick={onToggleVideo}
               aria-label={videoEnabled ? "Couper la caméra" : "Activer la caméra"}

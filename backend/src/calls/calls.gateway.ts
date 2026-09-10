@@ -16,6 +16,7 @@ import { GroupCallsGateway } from '../group-calls/group-calls.gateway';
 import { GroupCallMessageDto } from '../group-calls/group-calls.service';
 import { SocketRateLimiter } from '../websocket/socket-rate-limiter';
 import { verifySocketUserId } from '../websocket/socket-auth.util';
+import { CallTranslationService } from './call-translation.service';
 import { CallMessageDto, CallsService } from './calls.service';
 
 interface InvitePayload {
@@ -26,6 +27,19 @@ interface InvitePayload {
 }
 interface CallIdPayload {
   callId: string;
+}
+interface AcceptPayload extends CallIdPayload {
+  /** Langue dans laquelle l'appelé veut entendre l'appelant — absente/vide ⇒ aucune traduction. */
+  receiveLanguage?: string | null;
+}
+interface SetLanguagePayload extends CallIdPayload {
+  language: string | null;
+}
+/** Fragment de la voix locale (~5 s) à transcrire → traduire → synthétiser pour l'autre partie. */
+interface SpeechChunkPayload extends CallIdPayload {
+  audio: string; // base64
+  mimeType: string;
+  seq: number;
 }
 interface EscalatePayload extends CallIdPayload {
   inviteeId: string;
@@ -88,11 +102,16 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   // pour ne jamais gêner un appel réel, seulement une boucle/un abus net.
   private readonly actionLimiter = new SocketRateLimiter(20, 10_000);
   private readonly signalLimiter = new SocketRateLimiter(300, 10_000);
+  // Un fragment de voix toutes les ~5 s en régime normal : une borne large
+  // (mais bien réelle) suffit à couper une boucle/un abus sans jamais gêner
+  // un appel légitime, même avec un débit de fragments accéléré.
+  private readonly chunkLimiter = new SocketRateLimiter(40, 60_000);
 
   constructor(
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly calls: CallsService,
+    private readonly callTranslation: CallTranslationService,
     private readonly groupCallsGateway: GroupCallsGateway,
   ) {}
 
@@ -116,6 +135,7 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   async handleDisconnect(client: AppSocket): Promise<void> {
     this.actionLimiter.clear(client.id);
     this.signalLimiter.clear(client.id);
+    this.chunkLimiter.clear(client.id);
 
     const userId = client.data.userId;
     if (!userId) return;
@@ -123,6 +143,7 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const resolved = await this.calls.resolveOrphaned(userId);
       for (const callMessage of resolved) {
+        this.callTranslation.clear(callMessage.call.id);
         const otherUserId =
           callMessage.call.callerId === userId
             ? callMessage.call.calleeId
@@ -161,7 +182,7 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('call:accept')
   async handleAccept(
     @ConnectedSocket() client: AppSocket,
-    @MessageBody() body: CallIdPayload,
+    @MessageBody() body: AcceptPayload,
   ): Promise<AckResult<{ callMessage: CallMessageDto }>> {
     const userId = client.data.userId;
     if (!userId) return { ok: false, error: 'Non authentifié.' };
@@ -169,6 +190,27 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const result = await this.calls.accept(userId, body.callId);
       this.server.to(this.userRoom(result.call.callerId)).emit('call:accepted', result);
+
+      // Langue de réception choisie par l'appelé sur l'écran d'appel entrant
+      // — best-effort : une langue inconnue ne fait jamais échouer la prise
+      // d'appel elle-même, elle est simplement ignorée. L'appelant est
+      // prévenu (call:language-changed) pour lancer la capture de fragments.
+      if (body.receiveLanguage) {
+        try {
+          await this.callTranslation.setReceiveLanguage(body.callId, userId, body.receiveLanguage);
+          this.server.to(this.userRoom(result.call.callerId)).emit('call:language-changed', {
+            callId: body.callId,
+            userId,
+            language: body.receiveLanguage,
+          });
+        } catch (error) {
+          this.logger.warn(
+            `Langue de réception d'appel refusée pour ${userId} : ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
       // Un appel entrant sonne sur TOUS les appareils connectés de l'appelé
       // (voir handleInvite : diffusion à toute sa room "user:<id>") — les
       // AUTRES appareils que celui qui vient d'accepter doivent cesser de
@@ -193,6 +235,7 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!this.actionLimiter.consume(client.id)) return this.rateLimited();
     try {
       const result = await this.calls.reject(userId, body.callId);
+      this.callTranslation.clear(body.callId);
       this.server.to(this.userRoom(result.call.callerId)).emit('call:rejected', result);
       // Même principe que dans handleAccept ci-dessus : les autres appareils
       // de l'appelé doivent aussi cesser de sonner.
@@ -213,6 +256,7 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!this.actionLimiter.consume(client.id)) return this.rateLimited();
     try {
       const result = await this.calls.cancel(userId, body.callId);
+      this.callTranslation.clear(body.callId);
       this.server.to(this.userRoom(result.call.calleeId)).emit('call:cancelled', result);
       return { ok: true, callMessage: result };
     } catch (error) {
@@ -230,6 +274,7 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!this.actionLimiter.consume(client.id)) return this.rateLimited();
     try {
       const result = await this.calls.end(userId, body.callId);
+      this.callTranslation.clear(body.callId);
       const otherUserId =
         result.call.callerId === userId ? result.call.calleeId : result.call.callerId;
       this.server.to(this.userRoom(otherUserId)).emit('call:ended', result);
@@ -265,6 +310,7 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         body.callId,
         body.inviteeId,
       );
+      this.callTranslation.clear(body.callId);
       this.server.to(this.userRoom(otherPartyId)).emit('call:upgraded', {
         endedCallId: body.callId,
         groupCallMessage: groupCall,
@@ -307,6 +353,100 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() body: SignalPayload,
   ): Promise<void> {
     await this.relaySignal(client, body, 'call:video-state');
+  }
+
+  /**
+   * L'utilisateur choisit (ou retire, `language: null`) la langue dans
+   * laquelle il veut entendre l'autre partie — depuis l'écran d'appel
+   * entrant ou le menu en cours d'appel. Diffuse `call:language-changed` à
+   * l'autre partie pour qu'elle sache si sa voix va être traduite.
+   */
+  @SubscribeMessage('call:set-language')
+  async handleSetLanguage(
+    @ConnectedSocket() client: AppSocket,
+    @MessageBody() body: SetLanguagePayload,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const userId = client.data.userId;
+    if (!userId) return { ok: false, error: 'Non authentifié.' };
+    if (!this.actionLimiter.consume(client.id)) return this.rateLimited();
+    if (!body?.callId) return { ok: false, error: 'Appel inconnu.' };
+
+    const participants = await this.calls.getParticipants(body.callId);
+    if (!participants || (participants.callerId !== userId && participants.calleeId !== userId)) {
+      return { ok: false, error: 'Vous ne participez pas à cet appel.' };
+    }
+
+    try {
+      await this.callTranslation.setReceiveLanguage(body.callId, userId, body.language ?? null);
+    } catch (error) {
+      return this.toAckError(error);
+    }
+
+    const otherUserId =
+      participants.callerId === userId ? participants.calleeId : participants.callerId;
+    this.server.to(this.userRoom(otherUserId)).emit('call:language-changed', {
+      callId: body.callId,
+      userId,
+      language: body.language ?? null,
+    });
+    return { ok: true };
+  }
+
+  /**
+   * Fragment de la voix locale de l'émetteur : transcrit → traduit →
+   * synthétisé pour l'autre partie, dans la langue qu'elle a choisie
+   * (`call:set-language`). Entièrement best-effort — aucun ack, aucune
+   * erreur remontée : si rien n'en sort (traduction désactivée, langue non
+   * choisie, fournisseur en panne...), l'autre partie garde simplement
+   * l'audio d'origine (WebRTC). L'audio de l'appel lui-même ne passe JAMAIS
+   * par ici, seulement ces courts fragments dédiés à la traduction.
+   */
+  @SubscribeMessage('call:speech-chunk')
+  async handleSpeechChunk(
+    @ConnectedSocket() client: AppSocket,
+    @MessageBody() body: SpeechChunkPayload,
+  ): Promise<void> {
+    const userId = client.data.userId;
+    if (!userId || !body?.callId || typeof body.audio !== 'string') return;
+    if (!this.chunkLimiter.consume(client.id)) return;
+    if (!this.callTranslation.isEnabled()) return;
+
+    const participants = await this.calls.getParticipants(body.callId);
+    if (!participants) return;
+    if (participants.callerId !== userId && participants.calleeId !== userId) return;
+    const listenerId =
+      participants.callerId === userId ? participants.calleeId : participants.callerId;
+
+    const result = await this.callTranslation.processChunk({
+      callId: body.callId,
+      speakerId: userId,
+      listenerId,
+      audio: Buffer.from(body.audio, 'base64'),
+      mimeType: typeof body.mimeType === 'string' ? body.mimeType : 'audio/webm',
+    });
+    if (!result) return;
+
+    this.server.to(this.userRoom(listenerId)).emit('call:translated-speech', {
+      callId: body.callId,
+      seq: body.seq,
+      text: result.translatedText,
+      audio: result.audioBase64,
+      mimeType: result.audioMimeType,
+    });
+
+    // Sous-titres pour les deux : l'auditeur voit ce que l'autre a dit
+    // (traduit), l'émetteur voit sa propre phrase transcrite en confirmation.
+    const subtitle = {
+      callId: body.callId,
+      seq: body.seq,
+      speakerId: userId,
+      original: result.originalText,
+      translated: result.translatedText,
+      sourceLanguage: result.sourceLanguage,
+      targetLanguage: result.targetLanguage,
+    };
+    this.server.to(this.userRoom(userId)).emit('call:subtitle', subtitle);
+    this.server.to(this.userRoom(listenerId)).emit('call:subtitle', subtitle);
   }
 
   /**

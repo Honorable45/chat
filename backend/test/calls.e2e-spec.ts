@@ -168,6 +168,58 @@ describe('Calls (e2e)', () => {
     socketB.close();
   });
 
+  it('expose la langue d’envoi de chaque partie et gère le choix de langue de réception', async () => {
+    const socketA = await connect(a.accessToken);
+    const socketB = await connect(b.accessToken);
+
+    const incoming = new Promise<{ call: { id: string; callerLanguage: string | null } }>(
+      (resolve) => socketB.once('call:incoming', resolve),
+    );
+    const inviteRes = await ack(socketA, 'call:invite', { conversationId: convAB, calleeId: b.id });
+    const callId = inviteRes.callMessage!.call.id;
+
+    // La langue d'envoi (profil) est portée par le DTO d'appel — sert au
+    // client à pré-remplir « recevoir en… » sur l'écran d'appel entrant.
+    const incomingPayload = await incoming;
+    expect(incomingPayload.call.callerLanguage).toBe('fr');
+
+    // L'appelé décroche en demandant une langue de réception valide.
+    const acceptRes = await ack(socketB, 'call:accept', { callId, receiveLanguage: 'en' });
+    expect(acceptRes.ok).toBe(true);
+
+    // L'appelant change sa propre langue de réception en cours d'appel :
+    // l'autre partie est prévenue via call:language-changed.
+    const languageChanged = new Promise<{ userId: string; language: string | null }>((resolve) =>
+      socketB.once('call:language-changed', resolve),
+    );
+    const setRes = await ack(socketA, 'call:set-language', { callId, language: 'es' });
+    expect(setRes.ok).toBe(true);
+    expect(await languageChanged).toMatchObject({ userId: a.id, language: 'es' });
+
+    // Une langue inconnue est refusée proprement (jamais d'exception non gérée).
+    const badRes = await ack(socketA, 'call:set-language', { callId, language: 'zz' });
+    expect(badRes.ok).toBe(false);
+
+    // Fragment de voix : aucun fournisseur configuré en test → aucune
+    // traduction émise, mais surtout aucun plantage.
+    let translated = false;
+    socketB.once('call:translated-speech', () => {
+      translated = true;
+    });
+    socketA.emit('call:speech-chunk', {
+      callId,
+      audio: Buffer.from('not-real-audio').toString('base64'),
+      mimeType: 'audio/webm',
+      seq: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(translated).toBe(false);
+
+    await ack(socketB, 'call:end', { callId });
+    socketA.close();
+    socketB.close();
+  });
+
   it("relaie 'call:rejected' quand l'appelé refuse, et persiste DECLINED", async () => {
     const socketA = await connect(a.accessToken);
     const socketB = await connect(b.accessToken);
@@ -321,13 +373,17 @@ describe('Calls (e2e)', () => {
     const inviteRes = await ack(socketA, 'call:invite', { conversationId: convAB, calleeId: b.id });
     await incomingOnBoth; // sonne bien sur les deux appareils
 
-    const resolvedOnB2 = new Promise((resolve) => socketB2.once('call:resolved-elsewhere', resolve));
+    const resolvedOnB2 = new Promise((resolve) =>
+      socketB2.once('call:resolved-elsewhere', resolve),
+    );
     let b1ReceivedResolvedElsewhere = false;
     socketB1.once('call:resolved-elsewhere', () => {
       b1ReceivedResolvedElsewhere = true;
     });
 
-    const acceptRes = await ack(socketB1, 'call:accept', { callId: inviteRes.callMessage!.call.id });
+    const acceptRes = await ack(socketB1, 'call:accept', {
+      callId: inviteRes.callMessage!.call.id,
+    });
     expect(acceptRes.ok).toBe(true);
 
     const payload = (await resolvedOnB2) as { call: { status: string } };
@@ -348,8 +404,12 @@ describe('Calls (e2e)', () => {
 
     const inviteRes = await ack(socketA, 'call:invite', { conversationId: convAB, calleeId: b.id });
 
-    const resolvedOnB2 = new Promise((resolve) => socketB2.once('call:resolved-elsewhere', resolve));
-    const rejectRes = await ack(socketB1, 'call:reject', { callId: inviteRes.callMessage!.call.id });
+    const resolvedOnB2 = new Promise((resolve) =>
+      socketB2.once('call:resolved-elsewhere', resolve),
+    );
+    const rejectRes = await ack(socketB1, 'call:reject', {
+      callId: inviteRes.callMessage!.call.id,
+    });
     expect(rejectRes.ok).toBe(true);
 
     const payload = (await resolvedOnB2) as { call: { status: string } };
