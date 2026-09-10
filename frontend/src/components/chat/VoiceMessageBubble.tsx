@@ -320,17 +320,24 @@ export function VoiceMessageBubble({
     setMenuOpen(false);
     rememberLanguage(code);
     setSuggestedCode(code);
-    if (code === selectedLang) {
-      setShowTranslation(true);
-      return;
-    }
-    setSelectedLang(code);
     setShowTranslation(true);
-    setRequestFailed(false);
-    dropTranslatedTrack();
 
     const existing = voice?.translations.find((t) => t.targetLanguage.code === code);
-    if (existing && existing.status === "COMPLETED") return;
+    // Déjà traduit (ou en cours) vers cette langue : on l'affiche, rien à
+    // redemander. Un échec (FAILED) ou un re-choix explicite relance en revanche.
+    if (
+      code === selectedLang &&
+      existing &&
+      (existing.status === "COMPLETED" || existing.status === "PROCESSING")
+    ) {
+      return;
+    }
+    if (code !== selectedLang) {
+      setSelectedLang(code);
+      dropTranslatedTrack();
+    }
+    setRequestFailed(false);
+    if (existing?.status === "COMPLETED") return;
 
     setRequesting(true);
     try {

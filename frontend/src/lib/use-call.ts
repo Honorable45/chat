@@ -244,13 +244,30 @@ export function useCall(
   const translatedQueueRef = useRef<HTMLAudioElement[]>([]);
   const translatedPlayingRef = useRef(false);
   const chunkSeqRef = useRef(0);
+  const duckHoldRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /** Baisse (ou rétablit) le volume du flux WebRTC d'origine selon qu'une traduction est active pour moi. */
-  const applyRemoteDucking = useCallback(() => {
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.volume = stateRef.current.receiveLanguage ? DUCKED_REMOTE_VOLUME : 1;
+  /**
+   * Atténue le flux WebRTC d'origine UNIQUEMENT pendant qu'une voix traduite
+   * joue (court maintien à la fin) — jamais en permanence : si la synthèse
+   * vocale est indisponible (aucun `audio` reçu, ex. plan ElevenLabs
+   * gratuit), l'utilisateur garde l'audio d'origine à plein volume + les
+   * sous-titres, plutôt qu'un son quasi inaudible sans rien pour le remplacer.
+   */
+  function setRemoteDucked(ducked: boolean): void {
+    if (duckHoldRef.current) {
+      clearTimeout(duckHoldRef.current);
+      duckHoldRef.current = null;
     }
-  }, []);
+    const el = remoteVideoRef.current;
+    if (!el) return;
+    if (ducked) {
+      el.volume = DUCKED_REMOTE_VOLUME;
+    } else {
+      duckHoldRef.current = setTimeout(() => {
+        if (remoteVideoRef.current) remoteVideoRef.current.volume = 1;
+      }, 600);
+    }
+  }
 
   const stopTranslationMedia = useCallback(() => {
     speechCaptureRef.current?.stop();
@@ -259,18 +276,23 @@ export function useCall(
     translatedQueueRef.current = [];
     translatedPlayingRef.current = false;
     chunkSeqRef.current = 0;
+    if (duckHoldRef.current) clearTimeout(duckHoldRef.current);
+    duckHoldRef.current = null;
+    if (remoteVideoRef.current) remoteVideoRef.current.volume = 1;
   }, []);
 
-  // Fonction simple (jamais un hook, pas d'auto-référence dans un useCallback) :
-  // ne lit/écrit que des refs, la fermeture capturée une fois par l'effet
-  // socket reste donc toujours valide.
+  // Fonctions simples (jamais des hooks, pas d'auto-référence dans un
+  // useCallback) : ne lisent/écrivent que des refs et le DOM, la fermeture
+  // capturée une fois par l'effet socket reste donc toujours valide.
   function drainTranslatedQueue(): void {
     const audio = translatedQueueRef.current.shift();
     if (!audio) {
       translatedPlayingRef.current = false;
+      setRemoteDucked(false);
       return;
     }
     translatedPlayingRef.current = true;
+    setRemoteDucked(true);
     audio.addEventListener("ended", drainTranslatedQueue, { once: true });
     audio.addEventListener("error", drainTranslatedQueue, { once: true });
     void audio.play().catch(() => drainTranslatedQueue());
@@ -370,7 +392,6 @@ export function useCall(
       pc.ontrack = (event) => {
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = event.streams[0] ?? null;
-          applyRemoteDucking();
           void remoteVideoRef.current.play().catch(() => {});
         }
       };
@@ -495,7 +516,7 @@ export function useCall(
     );
 
     // Réplique traduite de l'interlocuteur : on lit la voix synthétisée (si
-    // fournie) par-dessus le flux d'origine, déjà atténué (applyRemoteDucking).
+    // fournie) — le flux d'origine est atténué le temps de la lecture (voir drainTranslatedQueue).
     socket.on(
       "call:translated-speech",
       (payload: { callId: string; seq: number; text: string; audio: string | null; mimeType: string | null }) => {
@@ -747,9 +768,8 @@ export function useCall(
       localStream: stream,
       receiveLanguage: chosenLanguage,
     });
-    applyRemoteDucking();
     if (res.callMessage) onCallMessageRef.current(res.callMessage);
-  }, [applyRemoteDucking, cleanupMedia, reset, update]);
+  }, [cleanupMedia, reset, update]);
 
   /**
    * Reprend un appel entrant après ouverture de l'app depuis l'action
@@ -851,10 +871,10 @@ export function useCall(
       const normalized =
         language && language !== stateRef.current.otherPartyLanguage ? language : null;
       update({ receiveLanguage: normalized, subtitles: [] });
-      applyRemoteDucking();
+      if (!normalized && remoteVideoRef.current) remoteVideoRef.current.volume = 1;
       await ack(socket, "call:set-language", { callId, language: normalized });
     },
-    [applyRemoteDucking, update],
+    [update],
   );
 
   /**

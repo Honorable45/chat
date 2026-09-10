@@ -19,6 +19,9 @@ function buildMessage(overrides: Record<string, unknown> = {}) {
       audioMimeType: 'audio/wav',
     },
     conversation: { members: [{ userId: 'user-1' }, { userId: 'user-2' }] },
+    // Langue principale du profil expéditeur — repli quand le STT ne
+    // reconnaît pas la langue parlée (voir resolveSource).
+    sender: { primaryLanguage: { id: 'lang-fr', code: 'fr' } },
     ...overrides,
   };
 }
@@ -179,10 +182,28 @@ describe('VoiceTranslationPipelineService', () => {
     expect(translation.translate).not.toHaveBeenCalled();
   });
 
-  it("n'enchaîne pas sur la traduction si la langue détectée n'est pas reconnue", async () => {
+  it('replie sur la langue du profil expéditeur quand le STT ne reconnaît pas la langue', async () => {
     speechToText.isConfigured.mockReturnValue(true);
     speechToText.transcribe.mockResolvedValue({ text: 'Bonjour', languageCode: 'zz' });
-    mockLanguageRegistry(); // "zz" inconnu du registre → null
+    // "zz" inconnu du registre → runTranscription enregistre le transcript
+    // puis renvoie null ; on relit le transcript pour le repli.
+    mockLanguageRegistry();
+    prisma.voiceMessage.findUnique.mockResolvedValue({ transcript: 'Bonjour' });
+    translation.isConfigured.mockReturnValue(true);
+    translation.translate.mockResolvedValue({ translatedText: 'Hello' });
+
+    service.translateInBackground('msg-1', 'en');
+    await flush();
+
+    // fr = langue principale du profil expéditeur (voir buildMessage).
+    expect(translation.translate).toHaveBeenCalledWith('Bonjour', 'fr', 'en');
+  });
+
+  it('échoue proprement si aucun transcript ne peut être obtenu', async () => {
+    speechToText.isConfigured.mockReturnValue(true);
+    speechToText.transcribe.mockRejectedValue(new Error('STT en panne'));
+    mockLanguageRegistry();
+    prisma.voiceMessage.findUnique.mockResolvedValue({ transcript: null });
     translation.isConfigured.mockReturnValue(true);
 
     service.translateInBackground('msg-1', 'en');

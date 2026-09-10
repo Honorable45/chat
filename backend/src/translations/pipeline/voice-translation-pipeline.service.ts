@@ -28,6 +28,10 @@ interface TargetLanguage {
 const MESSAGE_WITH_CONVERSATION_INCLUDE = {
   voiceMessage: { include: { detectedLanguage: true } },
   conversation: { include: { members: { where: { leftAt: null } } } },
+  // Langue principale de l'expéditeur — repli quand le STT ne reconnaît pas
+  // la langue parlée (voir resolveSource), pour ne jamais bloquer une
+  // traduction demandée sur une simple détection ratée.
+  sender: { select: { primaryLanguage: { select: { id: true, code: true } } } },
 } satisfies Prisma.MessageInclude;
 
 type MessageWithConversation = Prisma.MessageGetPayload<{
@@ -120,9 +124,13 @@ export class VoiceTranslationPipelineService {
 
     const source = await this.resolveSource(message, participantIds);
     if (!source) {
-      // Sans transcription exploitable (STT indisponible, langue source non
-      // reconnue par le registre...), impossible de traduire : on le signale
-      // à la place d'un silence, l'UI affiche alors "traduction indisponible".
+      // Sans transcription exploitable (STT en échec, et aucune langue
+      // principale sur le profil expéditeur pour le repli), impossible de
+      // traduire : on le signale à la place d'un silence, l'UI affiche alors
+      // "traduction indisponible".
+      this.logger.warn(
+        `Traduction vocale ${messageId} vers "${targetLanguageCode}" abandonnée : transcription ou langue source indéterminable.`,
+      );
       this.events.emitToUsers(participantIds, 'translation:failed', {
         messageId,
         stage: 'translation',
@@ -132,9 +140,20 @@ export class VoiceTranslationPipelineService {
     }
 
     const target = await this.prisma.language.findUnique({ where: { code: targetLanguageCode } });
-    // Cible inconnue/désactivée, ou identique à la langue déjà parlée : rien à
-    // faire (VoiceService a normalement déjà écarté ces cas).
-    if (!target || !target.enabled || target.id === source.languageId) return;
+    if (!target || !target.enabled) return;
+
+    // Langue cible identique à la langue source (possible seulement après le
+    // repli sur la langue du profil expéditeur) : rien à traduire, on renvoie
+    // le transcript tel quel plutôt que de laisser l'UI tourner dans le vide.
+    if (target.id === source.languageId) {
+      this.events.emitToUsers(participantIds, 'translation:completed', {
+        messageId,
+        stage: 'translation',
+        targetLanguageCode: target.code,
+        translatedText: source.text,
+      });
+      return;
+    }
 
     await this.translateOne(
       messageId,
@@ -146,29 +165,51 @@ export class VoiceTranslationPipelineService {
   }
 
   /**
-   * Transcription source d'une traduction à la demande : réutilise celle déjà
-   * calculée à l'envoi si elle existe (le cas courant), sinon lance le STT
-   * maintenant.
+   * Résout le texte + la langue source d'une traduction à la demande :
+   * 1. transcription — réutilisée si déjà calculée à l'envoi, sinon lancée
+   *    maintenant ;
+   * 2. langue source — celle reconnue par le STT si elle l'est, sinon repli
+   *    sur la langue principale du profil de l'expéditeur (même stratégie que
+   *    la traduction d'appel, CallTranslationService) : une simple détection
+   *    ratée ne doit jamais bloquer une traduction explicitement demandée.
    */
   private async resolveSource(
     message: MessageWithConversation,
     participantIds: string[],
   ): Promise<TranscriptionOutcome | null> {
     const voice = message.voiceMessage!;
-    if (voice.transcript && voice.detectedLanguage) {
-      return {
-        text: voice.transcript,
-        languageId: voice.detectedLanguage.id,
-        languageCode: voice.detectedLanguage.code,
-      };
+
+    let transcript = voice.transcript;
+    let languageId = voice.detectedLanguage?.id ?? null;
+    let languageCode = voice.detectedLanguage?.code ?? null;
+
+    if (!transcript) {
+      const outcome = await this.runTranscription(
+        message.id,
+        voice.audioStorageKey,
+        voice.audioStorageProvider,
+        voice.audioMimeType,
+        participantIds,
+      );
+      if (outcome) return outcome;
+      // runTranscription enregistre le transcript même quand il ne reconnaît
+      // pas la langue (puis renvoie null) — on le relit pour le repli ci-dessous.
+      const refreshed = await this.prisma.voiceMessage.findUnique({
+        where: { messageId: message.id },
+        select: { transcript: true },
+      });
+      transcript = refreshed?.transcript ?? null;
     }
-    return this.runTranscription(
-      message.id,
-      voice.audioStorageKey,
-      voice.audioStorageProvider,
-      voice.audioMimeType,
-      participantIds,
-    );
+
+    if (!transcript?.trim()) return null;
+
+    if (!languageId || !languageCode) {
+      languageId = message.sender.primaryLanguage?.id ?? null;
+      languageCode = message.sender.primaryLanguage?.code ?? null;
+    }
+    if (!languageId || !languageCode) return null;
+
+    return { text: transcript, languageId, languageCode };
   }
 
   private async runTranscription(
