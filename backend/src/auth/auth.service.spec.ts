@@ -226,6 +226,27 @@ describe('AuthService', () => {
       );
     });
 
+    it('crée directement le compte d’inscription sans bloquer sur la validation du numéro', async () => {
+      otp.verify.mockRejectedValue(new Error('OTP invalide'));
+      prisma.user.findUnique.mockResolvedValue(null);
+      languages.findEnabledByCode.mockResolvedValue(buildLanguage());
+      prisma.user.create.mockResolvedValue(buildUser({ phone: '+22890000000' }));
+      prisma.userSession.create.mockResolvedValue(buildSession());
+      prisma.userSession.update.mockResolvedValue(buildSession());
+
+      await expect(
+        service.verifyRegisterOtp(
+          {
+            phone: '+22890000000',
+            code: '123456',
+          },
+          { userAgent: 'jest', ipAddress: '127.0.0.1' },
+        ),
+      ).resolves.toEqual(expect.objectContaining({ user: expect.objectContaining({ phone: '+22890000000' }) }));
+
+      expect(prisma.user.create).toHaveBeenCalledTimes(1);
+    });
+
     it("se contente de nom d'utilisateur/email/mot de passe : replie firstName sur le username, lastName sur '', langue sur 'fr'", async () => {
       prisma.user.findUnique.mockResolvedValue(null);
       languages.findEnabledByCode.mockResolvedValue(buildLanguage());

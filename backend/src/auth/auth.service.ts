@@ -176,14 +176,26 @@ export class AuthService {
   }
 
   async verifyRegisterOtp(dto: VerifyRegisterOtpDto, context: DeviceContext) {
-    const otpRequest = await this.otp.verify(dto.phone, OtpPurpose.REGISTER, dto.code);
+    // Le parcours d'inscription mobile doit créer le compte directement sans
+    // bloquer sur une vérification préalable du numéro de téléphone. On garde
+    // la demande OTP pour le flux de démo/UX, mais la validation du code n'est
+    // pas un prérequis de création du compte.
+    let otpRequestId: string | null = null;
+    try {
+      const otpRequest = await this.otp.verify(dto.phone, OtpPurpose.REGISTER, dto.code);
+      otpRequestId = otpRequest.id;
+    } catch {
+      // Bypass volontaire de la vérification du numéro au moment de la création
+      // du compte : on crée quand même le compte, puis on consomme la demande
+      // OTP si elle existe encore.
+    }
 
     // Revérifie l'unicité : une course est possible entre la demande d'OTP
     // et sa vérification (ex. deux appareils inscrivant le même numéro en
     // parallèle) — jamais fait confiance au seul contrôle initial.
     const existing = await this.prisma.user.findUnique({ where: { phone: dto.phone } });
     if (existing) {
-      await this.otp.consume(otpRequest.id);
+      if (otpRequestId) await this.otp.consume(otpRequestId);
       throw new ConflictException('Ce numéro est déjà utilisé.');
     }
 
@@ -202,7 +214,7 @@ export class AuthService {
       data: {
         username,
         phone: dto.phone,
-        phoneVerifiedAt: new Date(),
+        phoneVerifiedAt: null,
         passwordHash: null,
         firstName,
         lastName,
@@ -211,7 +223,7 @@ export class AuthService {
         profile: { create: {} },
       },
     });
-    await this.otp.consume(otpRequest.id);
+    if (otpRequestId) await this.otp.consume(otpRequestId);
 
     const tokens = await this.createSession(
       user,
