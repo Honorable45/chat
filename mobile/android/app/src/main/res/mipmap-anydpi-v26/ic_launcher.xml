@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Icône adaptative (Android 8+) — reprend exactement l'icône PWA du web
+     (dégradé accent/accent2 à 135°, "G" blanc centré), en deux calques
+     séparés comme l'exige le format : ic_launcher_background (dégradé
+     plein) et ic_launcher_foreground (G seul, transparent ailleurs, avec
+     la marge de sécurité déjà présente dans le PNG "maskable" du web). Sur
+     une API antérieure à 26, le lanceur retombe sur le PNG plat
+     mipmap/ic_launcher.png (généré à partir du même artwork). -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@mipmap/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>
