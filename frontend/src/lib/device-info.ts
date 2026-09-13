@@ -38,3 +38,14 @@ export function isLikelyMobileDevice(): boolean {
   if (typeof navigator === "undefined") return false;
   return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 }
+
+/** Distingue Android/iOS sur l'écran "disponible uniquement sur ordinateur"
+ * — seul Android propose un téléchargement direct de l'APK pour l'instant
+ * (voir LoginPage), jamais présenté comme disponible sur iOS. */
+export function detectMobileOs(): "android" | "ios" | "other" {
+  if (typeof navigator === "undefined") return "other";
+  const ua = navigator.userAgent;
+  if (/Android/i.test(ua)) return "android";
+  if (/iPhone|iPad|iPod/i.test(ua)) return "ios";
+  return "other";
+}

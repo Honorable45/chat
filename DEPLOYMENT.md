@@ -158,6 +158,15 @@ mais si elle est absente, le code retombe sur `http://localhost:4000` même
 en production (voir `lib/socket.ts`/`lib/use-call.ts`) — messagerie
 temps réel et appels resteraient silencieusement cassés.
 
+Optionnelle, propre à l'écran "disponible uniquement sur ordinateur" (§5) :
+
+```
+NEXT_PUBLIC_ANDROID_APK_URL=https://github.com/<vous>/chat/releases/download/<tag>/app-arm64-v8a-release.apk
+```
+
+Absente, le bouton "Télécharger l'app Android" reste simplement caché
+(jamais de lien mort) — voir §5 pour comment obtenir cette URL.
+
 > **Déploiements de preview** : chaque PR Vercel obtient une URL aléatoire,
 > qui ne sera jamais dans `CORS_ORIGIN` — les previews ne pourront donc pas
 > appeler le backend de production tant que vous n'ajoutez pas leur domaine
@@ -208,14 +217,59 @@ modifie que `isActive`, jamais `role`, par design).
 ## 5. Application mobile (Flutter)
 
 Ne se déploie pas sur Render/Vercel — distribution séparée (APK signé pour
-Android, TestFlight/App Store pour iOS), hors périmètre de ce document.
-Point d'attention pour le build : les URLs backend sont injectées au build
-(`--dart-define=API_BASE_URL=...`, voir `core/config.dart`), jamais lues
-depuis l'environnement à l'exécution — un APK de production doit être
-recompilé avec l'URL Render réelle :
+Android, TestFlight/App Store pour iOS — l'app iOS ne peut pas être compilée
+depuis un environnement Linux, macOS + Xcode requis), hors périmètre
+Render/Vercel de ce document. Point d'attention pour le build : les URLs
+backend sont injectées au build (`--dart-define=API_BASE_URL=...`, voir
+`core/config.dart`), jamais lues depuis l'environnement à l'exécution — un
+APK de production doit être recompilé avec l'URL Render réelle.
 
-```
-flutter build apk --release \
+### Signature (une seule fois)
+
+Un keystore de production existe déjà (`mobile/android/glotta-release.jks`
++ `mobile/android/key.properties`, générés localement) — **ni l'un ni
+l'autre n'est commité** (voir `mobile/android/.gitignore` :
+`key.properties`, `**/*.jks`), volontairement : c'est la seule clé qui
+signe l'app, une fuite permettrait à quiconque de publier une mise à jour
+qui se ferait passer pour la vôtre. **Sauvegardez ces deux fichiers
+ailleurs qu'ici** (perdre le keystore signifie ne plus jamais pouvoir
+publier de mise à jour sous la même identité d'app). Tant qu'ils sont
+présents, `android/app/build.gradle.kts` signe automatiquement tout
+`flutter build apk --release` avec — absents (ex. sur un autre poste/CI),
+le build retombe silencieusement sur la signature de debug.
+
+### Build + distribution directe (sans store)
+
+```bash
+flutter build apk --release --split-per-abi \
   --dart-define=API_BASE_URL=https://<votre-backend>.onrender.com/api \
   --dart-define=WS_BASE_URL=https://<votre-backend>.onrender.com
 ```
+
+`--split-per-abi` produit 3 APK bien plus légers qu'un seul APK universel
+(~110 Mo) : `app-arm64-v8a-release.apk` (~40 Mo, couvre la quasi-totalité
+des téléphones Android récents — c'est celui à partager en priorité),
+`app-armeabi-v7a-release.apk` (32 bits, anciens appareils),
+`app-x86_64-release.apk` (émulateurs/quelques tablettes).
+
+**Hébergement** : ces fichiers sont trop volumineux pour être commités
+dans le dépôt (au-delà de la limite de 100 Mo de GitHub pour l'universel,
+et une mauvaise pratique même sous cette limite pour les autres — ça
+gonfle l'historique git pour toujours) et le plan Cloudinary gratuit de ce
+projet plafonne les fichiers "raw" à 10 Mo (vérifié : un envoi de 20 Mo est
+rejeté). La solution recommandée est une **Release GitHub** (gratuite,
+jusqu'à 2 Go par fichier, ne touche jamais à l'historique git) :
+
+1. Sur GitHub → `Releases` → `Draft a new release`.
+2. Créez un tag (ex. `mobile-v1.0.0`), glissez `app-arm64-v8a-release.apk`
+   (et les deux autres si vous voulez couvrir tous les appareils) dans les
+   assets, publiez.
+3. Copiez l'URL de téléchargement directe de l'asset (clic droit dessus →
+   copier le lien, ou l'URL affichée sur la page de la release).
+4. Renseignez-la dans `NEXT_PUBLIC_ANDROID_APK_URL` (§3) — le bouton
+   "Télécharger l'app Android" de `/login` (visité depuis un téléphone
+   Android) s'active automatiquement.
+
+Alternative : n'importe quel autre hébergeur de fichiers statiques (S3,
+Cloudflare R2, Backblaze B2...) fonctionne aussi tant que l'URL finale sert
+directement le fichier `.apk` (pas une page HTML intermédiaire).

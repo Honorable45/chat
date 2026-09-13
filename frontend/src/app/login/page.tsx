@@ -7,10 +7,14 @@ import { io, type Socket } from "socket.io-client";
 import { AuthShell } from "@/components/auth/AuthShell";
 import { ApiError, api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { isLikelyMobileDevice } from "@/lib/device-info";
+import { detectMobileOs, isLikelyMobileDevice } from "@/lib/device-info";
 import type { AuthTokens, SafeUser } from "@/lib/types";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "http://localhost:4000";
+// Absente tant que l'APK n'est pas hébergé quelque part (voir DEPLOYMENT.md,
+// section distribution mobile) — le bouton de téléchargement reste alors
+// caché plutôt que de pointer vers un lien mort.
+const ANDROID_APK_URL = process.env.NEXT_PUBLIC_ANDROID_APK_URL;
 
 type LinkState = "loading" | "ready" | "expired" | "cancelled" | "error";
 
@@ -110,13 +114,25 @@ export default function LoginPage() {
   if (isMobile === null) return null;
 
   if (isMobile) {
+    const mobileOs = detectMobileOs();
     return (
       <AuthShell title="Glotta Web" subtitle="" footer={null}>
-        <div className="flex flex-col items-center gap-3 py-4 text-center">
+        <div className="flex flex-col items-center gap-4 py-4 text-center">
           <p className="text-sm text-muted-strong">
             Glotta Web est disponible uniquement sur ordinateur. Utilisez l&rsquo;application mobile Glotta pour
             accéder à votre compte.
           </p>
+          {mobileOs === "android" && ANDROID_APK_URL && (
+            <a
+              href={ANDROID_APK_URL}
+              className="rounded-xl bg-gradient-to-r from-[var(--accent)] to-[var(--accent-2)] px-5 py-2.5 text-sm font-semibold text-[var(--accent-contrast)] transition hover:opacity-90"
+            >
+              Télécharger l&rsquo;app Android
+            </a>
+          )}
+          {mobileOs === "ios" && (
+            <p className="text-xs text-muted">L&rsquo;app iOS n&rsquo;est pas encore disponible.</p>
+          )}
         </div>
       </AuthShell>
     );
