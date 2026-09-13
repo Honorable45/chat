@@ -10,7 +10,7 @@ import { DeviceLinkGateway } from './device-link/device-link.gateway';
 import { DeviceLinkService } from './device-link/device-link.service';
 import { MailService } from './mail/mail.service';
 import { OtpService } from './otp/otp.service';
-import { VonageService } from './sms/vonage.service';
+import { SmsService } from './sms/sms.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { TwoFactorController } from './two-factor/two-factor.controller';
 import { TwoFactorService } from './two-factor/two-factor.service';
@@ -36,7 +36,7 @@ import { TwoFactorService } from './two-factor/two-factor.service';
     JwtStrategy,
     MailService,
     OtpService,
-    VonageService,
+    SmsService,
     TwoFactorService,
     DeviceLinkService,
     DeviceLinkGateway,

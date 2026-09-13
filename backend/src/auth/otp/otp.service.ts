@@ -3,7 +3,7 @@ import { OtpPurpose, type OtpRequest } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomBytes, randomInt } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
-import { VonageService } from '../sms/vonage.service';
+import { SmsService } from '../sms/sms.service';
 
 const OTP_HASH_ROUNDS = 10; // plus léger que PASSWORD_SALT_ROUNDS (12) : un code à 6 chiffres expire en minutes, pas besoin du même coût.
 const OTP_TTL_MS = 5 * 60 * 1000; // 5 min
@@ -12,7 +12,7 @@ const CONTINUATION_TOKEN_TTL_MS = 10 * 60 * 1000; // 10 min — laisse le temps 
 
 /**
  * Cycle de vie générique d'un OTP à 6 chiffres envoyé par SMS (voir
- * VonageService) — partagé entre inscription, connexion et récupération de
+ * SmsService) — partagé entre inscription, connexion et récupération de
  * PIN 2FA (voir `OtpPurpose`). Ne stocke jamais le code en clair (`codeHash`
  * uniquement, même logique que les mots de passe/refresh tokens).
  */
@@ -20,7 +20,7 @@ const CONTINUATION_TOKEN_TTL_MS = 10 * 60 * 1000; // 10 min — laisse le temps 
 export class OtpService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly vonage: VonageService,
+    private readonly sms: SmsService,
   ) {}
 
   /**
@@ -58,7 +58,7 @@ export class OtpService {
       },
     });
 
-    await this.vonage.sendOtp(phone, code);
+    await this.sms.sendOtp(phone, code);
   }
 
   /**

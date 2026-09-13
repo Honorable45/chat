@@ -2,7 +2,7 @@ import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { OtpPurpose, type OtpRequest } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../prisma/prisma.service';
-import { VonageService } from '../sms/vonage.service';
+import { SmsService } from '../sms/sms.service';
 import { OtpService } from './otp.service';
 
 jest.mock('bcrypt');
@@ -37,7 +37,7 @@ describe('OtpService', () => {
       update: jest.Mock;
     };
   };
-  let vonage: { sendOtp: jest.Mock };
+  let sms: { sendOtp: jest.Mock };
   let service: OtpService;
 
   beforeEach(() => {
@@ -49,13 +49,10 @@ describe('OtpService', () => {
         update: jest.fn(),
       },
     };
-    vonage = { sendOtp: jest.fn().mockResolvedValue(undefined) };
+    sms = { sendOtp: jest.fn().mockResolvedValue(undefined) };
     mockedBcrypt.hash.mockResolvedValue('hashed-code' as never);
 
-    service = new OtpService(
-      prisma as unknown as PrismaService,
-      vonage as unknown as VonageService,
-    );
+    service = new OtpService(prisma as unknown as PrismaService, sms as unknown as SmsService);
   });
 
   describe('request', () => {
@@ -71,7 +68,7 @@ describe('OtpService', () => {
           data: expect.objectContaining({ phone: '+22890000000', purpose: OtpPurpose.LOGIN }),
         }),
       );
-      expect(vonage.sendOtp).toHaveBeenCalledWith('+22890000000', expect.stringMatching(/^\d{6}$/));
+      expect(sms.sendOtp).toHaveBeenCalledWith('+22890000000', expect.stringMatching(/^\d{6}$/));
     });
 
     it('rejette une nouvelle demande trop rapprochée de la précédente (anti-spam)', async () => {
@@ -82,7 +79,7 @@ describe('OtpService', () => {
       await expect(service.request('+22890000000', OtpPurpose.LOGIN)).rejects.toThrow(
         BadRequestException,
       );
-      expect(vonage.sendOtp).not.toHaveBeenCalled();
+      expect(sms.sendOtp).not.toHaveBeenCalled();
     });
 
     it("invalide l'ancienne demande non consommée avant d'en créer une nouvelle", async () => {

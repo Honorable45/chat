@@ -1,24 +1,24 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Vonage } from '@vonage/server-sdk';
-import { SMSStatus } from '@vonage/sms';
+
+const TEXTBEE_SEND_URL = 'https://api.textbee.dev/api/v1/gateway/send-sms';
 
 /**
  * Envoi de SMS (code OTP) — même convention que MailService pour l'email
  * (voir auth/mail/mail.service.ts) : SMS_PROVIDER="none" journalise le code
  * au lieu de l'envoyer réellement (dev uniquement, jamais présenté comme un
- * vrai envoi), SMS_PROVIDER="vonage" appelle l'API Vonage. Remplacer cette
- * classe par un autre fournisseur ne change que son intérieur, jamais ses
- * appelants (OtpService).
+ * vrai envoi), SMS_PROVIDER="textbee" appelle l'API TextBee (passerelle SMS
+ * qui relaie via un téléphone Android connecté, voir
+ * https://textbee.dev/docs). Remplacer cette classe par un autre fournisseur
+ * ne change que son intérieur, jamais ses appelants (OtpService).
  *
- * Ne journalise JAMAIS VONAGE_API_SECRET ni le code lui-même en dehors du
+ * Ne journalise JAMAIS TEXTBEE_API_KEY ni le code lui-même en dehors du
  * mode "none" (où le code est le seul moyen de le récupérer en dev) —
  * voir sendOtp().
  */
 @Injectable()
-export class VonageService {
-  private readonly logger = new Logger(VonageService.name);
-  private client: Vonage | null = null;
+export class SmsService {
+  private readonly logger = new Logger(SmsService.name);
 
   constructor(private readonly config: ConfigService) {}
 
@@ -27,15 +27,7 @@ export class VonageService {
   }
 
   isDevMode(): boolean {
-    return this.getProvider() !== 'vonage';
-  }
-
-  private getClient(): Vonage {
-    if (this.client) return this.client;
-    const apiKey = this.config.getOrThrow<string>('VONAGE_API_KEY');
-    const apiSecret = this.config.getOrThrow<string>('VONAGE_API_SECRET');
-    this.client = new Vonage({ apiKey, apiSecret });
-    return this.client;
+    return this.getProvider() !== 'textbee';
   }
 
   /**
@@ -44,35 +36,43 @@ export class VonageService {
    * déjà, il vient de le générer) : cette méthode ne fait qu'acheminer.
    */
   async sendOtp(phone: string, code: string): Promise<void> {
-    const brand = this.config.get<string>('VONAGE_BRAND_NAME') ?? 'Glotta';
-    const text = `Votre code ${brand} est : ${code}`;
+    const text = `Votre code Glotta est : ${code}`;
 
     if (this.isDevMode()) {
       // Volontairement en clair ICI UNIQUEMENT (mode développement, jamais en
       // production tant que SMS_PROVIDER reste "none") — c'est le seul moyen
-      // de tester le parcours OTP sans compte Vonage réel.
+      // de tester le parcours OTP sans compte TextBee réel.
       this.logger.warn(
         `SMS_PROVIDER non configuré — code OTP pour ${this.maskPhone(phone)} (dev uniquement, non envoyé par SMS) : ${code}`,
       );
       return;
     }
 
+    const apiKey = this.config.getOrThrow<string>('TEXTBEE_API_KEY');
+    const deviceId = this.config.get<string>('TEXTBEE_DEVICE_ID');
+
     try {
-      const from = brand.replace(/[^a-zA-Z0-9]/g, '').slice(0, 11) || 'Glotta';
-      const result = await this.getClient().sms.send({ to: phone, from, text });
-      const failed = result.messages.find((m) => m.status !== SMSStatus.SUCCESS) as
-        { status: string; errorText?: string } | undefined;
-      if (failed) {
+      const response = await fetch(TEXTBEE_SEND_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
+        body: JSON.stringify({
+          recipients: [phone],
+          message: text,
+          ...(deviceId ? { deviceId } : {}),
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
         this.logger.error(
-          `Échec d'envoi SMS Vonage pour ${this.maskPhone(phone)} : statut ${failed.status} (${failed.errorText ?? 'raison inconnue'})`,
+          `Échec d'envoi SMS TextBee pour ${this.maskPhone(phone)} : HTTP ${response.status} (${body.slice(0, 200)})`,
         );
         throw new Error("Échec de l'envoi du SMS.");
       }
     } catch (error) {
-      // Jamais VONAGE_API_SECRET ni le code OTP dans ce log — seul le numéro
+      // Jamais TEXTBEE_API_KEY ni le code OTP dans ce log — seul le numéro
       // (masqué) et un message d'erreur générique.
       this.logger.error(
-        `Erreur Vonage pour ${this.maskPhone(phone)} : ${error instanceof Error ? error.message : 'erreur inconnue'}`,
+        `Erreur TextBee pour ${this.maskPhone(phone)} : ${error instanceof Error ? error.message : 'erreur inconnue'}`,
       );
       throw error;
     }
