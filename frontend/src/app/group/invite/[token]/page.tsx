@@ -89,15 +89,11 @@ export default function GroupInvitePage() {
               </button>
             ) : status === "anonymous" ? (
               <div className="flex w-full flex-col gap-2">
-                <p className="text-sm text-muted">Connectez-vous ou créez un compte, puis revenez sur ce lien pour rejoindre.</p>
+                <p className="text-sm text-muted">
+                  Connectez-vous sur Glotta Web (ou depuis l&rsquo;app mobile), puis revenez sur ce lien pour rejoindre.
+                </p>
                 <Link href="/login" className={primaryButtonClassName}>
                   Se connecter
-                </Link>
-                <Link
-                  href="/register"
-                  className="rounded-full border border-border px-4 py-2.5 text-center text-sm font-medium transition hover:bg-surface-raised"
-                >
-                  Créer un compte
                 </Link>
               </div>
             ) : (

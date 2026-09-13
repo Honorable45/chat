@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Fusionné uniquement dans les builds debug (Gradle "source set" par
+         variante) — jamais dans release : le HTTP en clair n'est nécessaire
+         que pour pointer un backend local en développement (voir
+         core/config.dart, AppConfig.apiBaseUrl). La prod utilisera un
+         backend HTTPS, aucune dérogation nécessaire côté release. -->
+    <application android:usesCleartextTraffic="true" />
+</manifest>

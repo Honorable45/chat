@@ -98,14 +98,11 @@ export default function Home() {
         <header className="relative mx-auto flex max-w-6xl items-center justify-between px-6 py-6">
           <span className="glotta-gradient-text text-xl font-semibold tracking-tight">Glotta</span>
           <nav className="flex items-center gap-2">
-            <Link href="/login" className="rounded-full px-4 py-2 text-sm text-muted-strong transition hover:text-foreground">
-              Se connecter
-            </Link>
             <Link
-              href="/register"
+              href="/login"
               className="rounded-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-2)] px-4 py-2 text-sm font-semibold text-[var(--accent-contrast)] transition hover:opacity-90"
             >
-              Créer un compte
+              Glotta Web
             </Link>
           </nav>
         </header>
@@ -123,18 +120,16 @@ export default function Home() {
             </p>
             <div className="flex flex-col gap-3 sm:flex-row">
               <Link
-                href="/register"
+                href="/login"
                 className="rounded-xl bg-gradient-to-r from-[var(--accent)] to-[var(--accent-2)] px-6 py-3 text-sm font-semibold text-[var(--accent-contrast)] transition hover:opacity-90"
               >
-                Commencer gratuitement
-              </Link>
-              <Link
-                href="/login"
-                className="rounded-xl border border-border px-6 py-3 text-sm font-semibold text-foreground transition hover:bg-surface-raised"
-              >
-                J&rsquo;ai déjà un compte
+                Ouvrir Glotta Web
               </Link>
             </div>
+            <p className="max-w-md text-sm text-muted">
+              L&rsquo;inscription se fait depuis l&rsquo;application mobile Glotta (numéro de téléphone) — Glotta Web se
+              connecte ensuite en scannant un QR code depuis votre téléphone.
+            </p>
           </div>
 
           <div className="flex w-full justify-center lg:w-auto">

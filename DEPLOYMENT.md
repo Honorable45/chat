@@ -106,7 +106,10 @@ Reprenez `backend/.env.example` et changez impérativement :
 | `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | Deux secrets forts générés (`openssl rand -hex 32`) — **jamais** les valeurs `change-me-*` de l'exemple |
 | `CALL_ACTION_JWT_SECRET` | Un troisième secret fort (`openssl rand -hex 32`), **distinct** des deux ci-dessus — jeton du bouton "Refuser" d'une notification push d'appel entrant (voir `CallsService.quickReject`) |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | Générées une fois avec `npx web-push generate-vapid-keys` (`VAPID_SUBJECT` = `mailto:<votre email>`) — **sans ces 3 variables, aucune notification push (message, appel manqué, appel entrant...) n'est envoyée**, même si tout le reste fonctionne : `PushProvider` retombe silencieusement sur "rien n'est envoyé" plutôt que d'échouer, donc l'oubli ne se voit dans aucun log d'erreur |
-| `CORS_ORIGIN` | Domaines Vercel de `frontend/` **et** `admin/`, séparés par une virgule (ex. `https://glotta.vercel.app,https://admin-glotta.vercel.app`) |
+| `CORS_ORIGIN` | Domaines Vercel de `frontend/` **et** `admin/`, séparés par une virgule (ex. `https://glotta.vercel.app,https://admin-glotta.vercel.app`) — sert aussi au nouveau namespace WebSocket `/device-link` (liaison Web par QR), rien de plus à configurer pour lui |
+| `SMS_PROVIDER` | `"vonage"` **avant tout lancement réel** — voir ⚠️ ci-dessous, `"none"` ne fait que journaliser le code OTP côté serveur |
+| `VONAGE_API_KEY` / `VONAGE_API_SECRET` | Identifiants du Dashboard Vonage (dashboard.nexmo.com) — requis si `SMS_PROVIDER="vonage"` |
+| `VONAGE_BRAND_NAME` | Nom affiché dans le SMS ("Votre code Glotta est : ...") — `"Glotta"` par défaut |
 | `STORAGE_LOCAL_PATH` | Chemin du volume persistant monté (messages vocaux uniquement, voir ci-dessus) |
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Identifiants du Dashboard Cloudinary — active le stockage de tous les médias (images, vidéos, avatars, photos de groupe, messages vocaux, audio traduit) |
 | `ADMIN_BOOTSTRAP_EMAIL` | Email d'un compte déjà inscrit, pour la toute première promotion admin — voir §4, à retirer une fois utilisé |
@@ -114,6 +117,24 @@ Reprenez `backend/.env.example` et changez impérativement :
 Les fournisseurs IA (`STT_PROVIDER`, `TRANSLATION_PROVIDER`,
 `TTS_PROVIDER` + leurs clés) restent optionnels (`"none"` par défaut) —
 activez-les seulement une fois prêt, aucun changement de code nécessaire.
+
+### ⚠️ Inscription/connexion par téléphone : sans Vonage, aucun SMS réel n'est envoyé
+
+Depuis l'authentification par téléphone + OTP (`AuthService.requestOtp` et
+consorts), **tant que `SMS_PROVIDER="none"`** (valeur par défaut), le code à
+6 chiffres est uniquement écrit dans les logs serveur (`VonageService`,
+comportement volontaire pour le développement — voir le commentaire dans le
+fichier) — **jamais envoyé par SMS**. En production, ça revient à rendre
+l'inscription/la connexion mobile inutilisables pour un vrai utilisateur (il
+n'a aucun moyen de lire les logs Render). Avant tout lancement réel :
+1. Créez un compte Vonage (dashboard.nexmo.com), récupérez `API_KEY`/`API_SECRET`.
+2. Renseignez `VONAGE_API_KEY`, `VONAGE_API_SECRET`, `SMS_PROVIDER="vonage"`.
+3. Testez un vrai envoi (`POST /auth/otp/request` avec un numéro réel) avant
+   d'annoncer la fonctionnalité aux utilisateurs.
+
+Le mot de passe classique (`/auth/login`, `/auth/register`) reste
+fonctionnel en parallèle (conservé pour l'accès admin/outillage) — seul le
+nouveau parcours téléphone dépend de Vonage.
 
 ### Health check
 
@@ -181,3 +202,20 @@ modifie que `isActive`, jamais `role`, par design).
 - [ ] `ADMIN_BOOTSTRAP_EMAIL` utilisé puis retiré
 - [ ] Health check backend configuré sur `/api/health`
 - [ ] `DISABLE_RATE_LIMITING` absent de l'environnement de production (réservé à `.env.test`)
+- [ ] `SMS_PROVIDER="vonage"` + `VONAGE_API_KEY`/`VONAGE_API_SECRET` renseignés (sans quoi l'inscription/connexion par téléphone ne fonctionne pour aucun utilisateur réel — voir §2)
+- [ ] Un vrai SMS de test reçu sur un téléphone avant d'annoncer la fonctionnalité
+
+## 5. Application mobile (Flutter)
+
+Ne se déploie pas sur Render/Vercel — distribution séparée (APK signé pour
+Android, TestFlight/App Store pour iOS), hors périmètre de ce document.
+Point d'attention pour le build : les URLs backend sont injectées au build
+(`--dart-define=API_BASE_URL=...`, voir `core/config.dart`), jamais lues
+depuis l'environnement à l'exécution — un APK de production doit être
+recompilé avec l'URL Render réelle :
+
+```
+flutter build apk --release \
+  --dart-define=API_BASE_URL=https://<votre-backend>.onrender.com/api \
+  --dart-define=WS_BASE_URL=https://<votre-backend>.onrender.com
+```

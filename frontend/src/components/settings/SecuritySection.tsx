@@ -142,6 +142,7 @@ export function SecuritySection() {
             >
               <div className="min-w-0">
                 <p className="truncate text-sm">
+                  <span className="mr-1 text-xs text-muted">{s.type === "WEB" ? "💻" : "📱"}</span>
                   {s.deviceLabel ?? "Appareil inconnu"}
                   {s.isCurrent && <span className="ml-2 text-xs text-[var(--online)]">cet appareil</span>}
                 </p>

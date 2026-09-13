@@ -21,11 +21,30 @@ datasource db {
 // ---------------------------------------------------------------------------
 
 model User {
-  id           String  @id @default(cuid())
-  username     String  @unique
-  email        String? @unique
-  phone        String? @unique
-  passwordHash String
+  id              String    @id @default(cuid())
+  username        String    @unique
+  email           String?   @unique
+  phone           String?   @unique
+  // Nullable : un compte créé via le parcours téléphone+OTP (voir
+  // AuthService.verifyRegisterOtp) n'a jamais de mot de passe — AuthService.login
+  // (mot de passe, conservé pour l'accès admin/outillage — voir AGENTS/rapport
+  // de la fonctionnalité "auth téléphone+OTP") rejette explicitement ces
+  // comptes plutôt que de faire échouer bcrypt.compare sur `null`.
+  passwordHash    String?
+  // Posé par AuthService.verifyRegisterOtp / verifyLoginOtp après un code
+  // correct — jamais par un endpoint qui ne vérifie pas réellement le SMS.
+  phoneVerifiedAt DateTime?
+
+  // Vérification en deux étapes (PIN, section "Sécurité") — jamais activée
+  // par défaut, jamais de PIN en clair (voir TwoFactorService).
+  twoFactorEnabled        Boolean   @default(false)
+  twoFactorPinHash        String?
+  // Email de secours pour la récupération du PIN 2FA — distinct de `email`
+  // (qui reste l'email de compte classique, jamais vérifié aujourd'hui) :
+  // celui-ci DOIT être vérifié avant d'être exploitable pour la récupération
+  // (voir EmailVerification, purpose RECOVERY_EMAIL_LINK).
+  recoveryEmail           String?
+  recoveryEmailVerifiedAt DateTime?
 
   firstName String
   lastName  String
@@ -41,7 +60,7 @@ model User {
   spokenLanguages UserSpokenLanguage[]
 
   conversationMemberships ConversationMember[]
-  sentMessages            Message[]            @relation("MessageSender")
+  sentMessages            Message[]              @relation("MessageSender")
   messageReads            MessageRead[]
   reactions               Reaction[]
   notifications           Notification[]
@@ -50,14 +69,16 @@ model User {
   sessions                UserSession[]
   attachments             Attachment[]
   passwordResetTokens     PasswordResetToken[]
-  callsMade               Call[]               @relation("CallCaller")
-  callsReceived           Call[]               @relation("CallCallee")
-  contactRequestsSent     ContactRequest[]     @relation("ContactRequestRequester")
-  contactRequestsReceived ContactRequest[]     @relation("ContactRequestRecipient")
-  sharedContactCards      SharedContact[]      @relation("SharedContactUser")
-  groupsCreated           Conversation[]       @relation("ConversationCreatedBy")
-  systemMessageTargets    Message[]            @relation("MessageSystemTarget")
-  groupInvitesCreated     GroupInvite[]        @relation("GroupInviteCreatedBy")
+  emailVerifications      EmailVerification[]
+  webLinkRequests         WebLinkRequest[]
+  callsMade               Call[]                 @relation("CallCaller")
+  callsReceived           Call[]                 @relation("CallCallee")
+  contactRequestsSent     ContactRequest[]       @relation("ContactRequestRequester")
+  contactRequestsReceived ContactRequest[]       @relation("ContactRequestRecipient")
+  sharedContactCards      SharedContact[]        @relation("SharedContactUser")
+  groupsCreated           Conversation[]         @relation("ConversationCreatedBy")
+  systemMessageTargets    Message[]              @relation("MessageSystemTarget")
+  groupInvitesCreated     GroupInvite[]          @relation("GroupInviteCreatedBy")
   mentions                MessageMention[]
   pushSubscriptions       PushSubscription[]
   favoriteStickers        FavoriteSticker[]
@@ -94,6 +115,15 @@ model UserSession {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  // Défaut MOBILE : préserve le sens des lignes déjà existantes (créées avant
+  // ce champ, toutes via le mot de passe — jamais via une liaison QR web),
+  // jamais recalculé rétroactivement. Distingue désormais l'écran "Appareils
+  // connectés" (voir AuthService.listSessions) : une session WEB peut être
+  // révoquée à distance en temps réel (voir EventsGateway.emitToUser,
+  // 'session:revoked'), une session MOBILE ne l'est jamais par un autre
+  // appareil que via une action explicite sur celui-ci.
+  type SessionType @default(MOBILE)
+
   refreshTokenHash         String
   // Hash tout juste supplanté lors de la dernière rotation — accepté encore
   // brièvement (voir AuthService.REFRESH_GRACE_PERIOD_MS) pour absorber une
@@ -127,6 +157,121 @@ model PasswordResetToken {
 
   @@index([userId])
   @@map("password_reset_tokens")
+}
+
+enum SessionType {
+  MOBILE
+  WEB
+}
+
+// Code à 6 chiffres envoyé par SMS (voir VonageService) — jamais stocké en
+// clair (codeHash uniquement, même logique que les mots de passe). Une seule
+// ligne active à la fois par (phone, purpose) : une nouvelle demande invalide
+// implicitement l'ancienne (voir OtpService.request, `expiresAt` avancé).
+model OtpRequest {
+  id       String     @id @default(cuid())
+  phone    String
+  purpose  OtpPurpose
+  codeHash String
+
+  // Tentatives de code — distinctes de `secondFactorAttempts` (étape PIN,
+  // seulement pour purpose=LOGIN quand la 2FA est active).
+  attempts    Int @default(0)
+  maxAttempts Int @default(5)
+
+  verifiedAt DateTime?
+  consumedAt DateTime?
+
+  // Jeton court remis au client une fois le code vérifié (jamais stocké en
+  // clair) — permet d'enchaîner sur l'étape PIN 2FA (purpose=LOGIN) ou sur
+  // l'étape email de la récupération (purpose=RECOVERY_PHONE) sans redemander
+  // l'OTP. Sans objet pour purpose=REGISTER (vérifié et consommé en un seul
+  // appel, voir AuthService.verifyRegisterOtp).
+  continuationTokenHash String?
+  secondFactorAttempts  Int     @default(0)
+
+  ipAddress String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([phone, purpose])
+  @@map("otp_requests")
+}
+
+enum OtpPurpose {
+  REGISTER
+  LOGIN
+  // Étape 1 de la récupération de PIN 2FA (section 4) : reconfirmer la
+  // possession du numéro avant de faire confiance à l'email de secours.
+  RECOVERY_PHONE
+}
+
+// Code à 6 chiffres envoyé par email — même mécanique que OtpRequest côté
+// téléphone, réutilisée pour deux usages distincts (voir `purpose`) plutôt
+// que deux tables identiques.
+model EmailVerification {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  email    String
+  purpose  EmailVerificationPurpose
+  codeHash String
+
+  attempts    Int @default(0)
+  maxAttempts Int @default(5)
+
+  verifiedAt DateTime?
+  expiresAt  DateTime
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, purpose])
+  @@map("email_verifications")
+}
+
+enum EmailVerificationPurpose {
+  // Ajout initial de l'email de secours (Paramètres → Sécurité) — une fois
+  // vérifié, copié dans User.recoveryEmail/recoveryEmailVerifiedAt.
+  RECOVERY_EMAIL_LINK
+  // Étape 2 de la récupération de PIN 2FA : reconfirme l'email déjà vérifié
+  // avant d'autoriser un nouveau PIN (voir AuthService.recoveryResetPin).
+  RECOVERY_EMAIL_CONFIRM
+}
+
+// Demande de liaison Glotta Web par QR code (section 6-9) — `userId` reste
+// `null` tant qu'aucun mobile authentifié n'a scanné/confirmé : la ligne
+// n'appartient à personne avant ça, elle n'est qu'un secret temporaire
+// (`tokenHash`) que le navigateur a créé pour lui-même.
+model WebLinkRequest {
+  id     String  @id @default(cuid())
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Seul le hash du jeton embarqué dans le QR est stocké — jamais le jeton
+  // brut (section 6 : "le QR ne doit pas contenir... des informations
+  // sensibles" ; ici c'est même la base qui ne le connaît jamais en clair).
+  tokenHash String
+  status    WebLinkStatus @default(PENDING)
+
+  // Déclaré par le navigateur à la création — jamais utilisé pour une
+  // décision de sécurité (seuls status/expiresAt/tokenHash le sont),
+  // seulement affiché sur l'écran de confirmation mobile (section 8).
+  browserName     String?
+  operatingSystem String?
+  ipAddress       String?
+
+  expiresAt   DateTime
+  confirmedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([userId])
+  @@map("web_link_requests")
+}
+
+enum WebLinkStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
 }
 
 // ---------------------------------------------------------------------------
@@ -704,11 +849,11 @@ enum CallStatus {
 // appelant/appelé. Réunir les deux dans un seul modèle aurait rendu le cas
 // 1:1, de loin le plus fréquent, plus complexe pour un bénéfice nul.
 model GroupCall {
-  id             String   @id @default(cuid())
+  id             String       @id @default(cuid())
   conversationId String
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  messageId      String   @unique
-  message        Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  messageId      String       @unique
+  message        Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
   initiatorId String
   initiator   User   @relation("GroupCallInitiator", fields: [initiatorId], references: [id], onDelete: Cascade)

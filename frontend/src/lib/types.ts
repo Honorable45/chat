@@ -419,12 +419,21 @@ export interface ProfileRecord {
 
 export interface SessionSummary {
   id: string;
+  type: "MOBILE" | "WEB";
   deviceLabel: string | null;
   userAgent: string | null;
   ipAddress: string | null;
   createdAt: string;
   lastUsedAt: string;
   isCurrent: boolean;
+}
+
+/** Réponse de POST /auth/web/create-link-request (section 6) — `token` est
+ * embarqué dans le QR, jamais stocké en clair côté serveur (voir
+ * DeviceLinkService.createLinkRequest). */
+export interface WebLinkRequestCreated {
+  token: string;
+  expiresAt: string;
 }
 
 export type StatusType = "TEXT" | "IMAGE" | "VIDEO" | "VOICE";

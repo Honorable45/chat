@@ -1,3 +1,4 @@
+import { detectBrowserName, detectOperatingSystem } from "./device-info";
 import { clearTokens, getAccessToken, getRefreshToken, setTokens } from "./token-store";
 import type {
   ApiErrorBody,
@@ -24,6 +25,7 @@ import type {
   StatusType,
   StatusVisibility,
   StatusView,
+  WebLinkRequestCreated,
   WhoCanInteract,
 } from "./types";
 
@@ -260,6 +262,15 @@ export const api = {
       request<void>("/auth/change-password", { method: "PATCH", body: dto }),
     sessions: () => request<SessionSummary[]>("/auth/sessions"),
     revokeSession: (id: string) => request<void>(`/auth/sessions/${id}`, { method: "DELETE" }),
+    // Public (section 6) : la page qui affiche le QR n'a par définition
+    // aucune session — la confirmation elle-même se fait côté mobile
+    // (voir DeviceLinkController), jamais depuis ce navigateur.
+    createLinkRequest: () =>
+      request<WebLinkRequestCreated>("/auth/web/create-link-request", {
+        method: "POST",
+        body: { browserName: detectBrowserName(), operatingSystem: detectOperatingSystem() },
+        auth: false,
+      }),
   },
   languages: {
     list: () => request<LanguageSummary[]>("/languages", { auth: false }),

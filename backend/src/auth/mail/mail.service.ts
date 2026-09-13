@@ -27,4 +27,17 @@ export class MailService {
     this.logger.warn(`MAIL_PROVIDER="${process.env.MAIL_PROVIDER}" déclaré mais non implémenté.`);
     return Promise.resolve();
   }
+
+  /** Code à 6 chiffres pour l'email de secours 2FA (voir TwoFactorService) — même repli "none" que sendPasswordReset. */
+  sendVerificationCode(to: string, code: string): Promise<void> {
+    if (!process.env.MAIL_PROVIDER || process.env.MAIL_PROVIDER === 'none') {
+      this.logger.warn(
+        `MAIL_PROVIDER non configuré — code de vérification pour ${to} (dev uniquement, non envoyé par email) : ${code}`,
+      );
+      return Promise.resolve();
+    }
+
+    this.logger.warn(`MAIL_PROVIDER="${process.env.MAIL_PROVIDER}" déclaré mais non implémenté.`);
+    return Promise.resolve();
+  }
 }

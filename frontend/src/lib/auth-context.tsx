@@ -5,7 +5,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { api, API_URL, ApiError, type LoginInput, type RegisterInput } from "./api";
 import { isPushSupported, subscribeToPush } from "./push";
 import { clearTokens, getAccessToken, setTokens } from "./token-store";
-import type { Me } from "./types";
+import type { AuthTokens, Me } from "./types";
 
 interface AuthContextValue {
   user: Me | null;
@@ -15,6 +15,10 @@ interface AuthContextValue {
   register: (dto: RegisterInput) => Promise<void>;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
+  /** Session reçue via la liaison QR (section 9, 'link:confirmed') — jamais
+   * de mot de passe ni d'appel /auth/login ici, les tokens viennent déjà du
+   * backend via le WebSocket de liaison. */
+  loginWithTokens: (tokens: AuthTokens) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -132,6 +136,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setStatus("authenticated");
   }, []);
 
+  const loginWithTokens = useCallback(async (tokens: AuthTokens) => {
+    setTokens(tokens);
+    setUser(await api.users.me());
+    setStatus("authenticated");
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await api.auth.logout();
@@ -147,8 +157,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, status, login, register, logout, refreshMe: loadMe }),
-    [user, status, login, register, logout, loadMe],
+    () => ({ user, status, login, register, logout, refreshMe: loadMe, loginWithTokens }),
+    [user, status, login, register, logout, loadMe, loginWithTokens],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

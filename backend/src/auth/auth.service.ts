@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import type { PasswordResetToken, User } from '@prisma/client';
+import { OtpPurpose, SessionType, type PasswordResetToken, type User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'node:crypto';
 import { LanguagesService } from '../languages/languages.service';
@@ -15,8 +15,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { VerifyLoginOtpDto } from './dto/verify-login-otp.dto';
+import { VerifyRegisterOtpDto } from './dto/verify-register-otp.dto';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
 import { MailService } from './mail/mail.service';
+import { OtpService } from './otp/otp.service';
 
 const ACCESS_TOKEN_TTL_FALLBACK = '15m';
 const REFRESH_TOKEN_TTL_FALLBACK = '30d';
@@ -57,6 +60,7 @@ export interface DeviceContext {
 
 export interface SessionSummary {
   id: string;
+  type: SessionType;
   deviceLabel: string | null;
   userAgent: string | null;
   ipAddress: string | null;
@@ -65,7 +69,7 @@ export interface SessionSummary {
   isCurrent: boolean;
 }
 
-function toSafeUser(user: User): SafeUser {
+export function toSafeUser(user: User): SafeUser {
   return {
     id: user.id,
     username: user.username,
@@ -84,6 +88,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly mail: MailService,
+    private readonly otp: OtpService,
   ) {}
 
   async register(dto: RegisterDto, context: DeviceContext) {
@@ -144,13 +149,187 @@ export class AuthService {
     // Même message dans les deux cas : ne pas révéler si l'identifiant existe
     // (protection contre l'énumération de comptes, section 23).
     const invalidCredentials = new UnauthorizedException('Identifiants invalides.');
-    if (!user || !user.isActive) throw invalidCredentials;
+    // `passwordHash` est nul pour tout compte créé via le parcours
+    // téléphone+OTP (voir verifyRegisterOtp) — ces comptes n'ont simplement
+    // aucun mot de passe à comparer, jamais une erreur bcrypt sur `null`.
+    if (!user || !user.isActive || !user.passwordHash) throw invalidCredentials;
 
     const passwordValid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!passwordValid) throw invalidCredentials;
 
     const tokens = await this.createSession(user, context);
     return { user: toSafeUser(user), ...tokens };
+  }
+
+  /**
+   * Inscription façon WhatsApp (section "1. INSCRIPTION MOBILE") : la seule
+   * vérification qui compte est celle du numéro — pas de mot de passe.
+   * Le nom d'utilisateur reste un concept interne à Glotta (recherche,
+   * mentions, @handle affiché) : généré automatiquement plutôt que demandé,
+   * modifiable ensuite depuis Paramètres → Profil (déjà supporté par
+   * PATCH /users/me).
+   */
+  async requestRegisterOtp(phone: string, ipAddress?: string): Promise<void> {
+    const existing = await this.prisma.user.findUnique({ where: { phone } });
+    if (existing) throw new ConflictException('Ce numéro est déjà utilisé.');
+    await this.otp.request(phone, OtpPurpose.REGISTER, ipAddress);
+  }
+
+  async verifyRegisterOtp(dto: VerifyRegisterOtpDto, context: DeviceContext) {
+    const otpRequest = await this.otp.verify(dto.phone, OtpPurpose.REGISTER, dto.code);
+
+    // Revérifie l'unicité : une course est possible entre la demande d'OTP
+    // et sa vérification (ex. deux appareils inscrivant le même numéro en
+    // parallèle) — jamais fait confiance au seul contrôle initial.
+    const existing = await this.prisma.user.findUnique({ where: { phone: dto.phone } });
+    if (existing) {
+      await this.otp.consume(otpRequest.id);
+      throw new ConflictException('Ce numéro est déjà utilisé.');
+    }
+
+    const primaryLanguage = await this.languages.findEnabledByCode(
+      dto.primaryLanguageCode ?? DEFAULT_LANGUAGE_CODE,
+    );
+    const preferredLanguage = dto.preferredReceiveLanguageCode
+      ? await this.languages.findEnabledByCode(dto.preferredReceiveLanguageCode)
+      : primaryLanguage;
+
+    const username = await this.generateUsernameFromPhone(dto.phone);
+    const firstName = dto.firstName?.trim() || username;
+    const lastName = dto.lastName?.trim() ?? '';
+
+    const user = await this.prisma.user.create({
+      data: {
+        username,
+        phone: dto.phone,
+        phoneVerifiedAt: new Date(),
+        passwordHash: null,
+        firstName,
+        lastName,
+        primaryLanguageId: primaryLanguage.id,
+        preferredReceiveLanguageId: preferredLanguage.id,
+        profile: { create: {} },
+      },
+    });
+    await this.otp.consume(otpRequest.id);
+
+    const tokens = await this.createSession(
+      user,
+      { ...context, deviceLabel: dto.deviceLabel ?? context.deviceLabel },
+      SessionType.MOBILE,
+    );
+    return { user: toSafeUser(user), ...tokens };
+  }
+
+  /**
+   * Connexion façon WhatsApp (section "2. CONNEXION MOBILE") : même réponse
+   * que le compte existe ou non (voir requestPasswordReset) — jamais
+   * d'énumération de comptes par numéro de téléphone.
+   */
+  async requestLoginOtp(phone: string, ipAddress?: string): Promise<void> {
+    const user = await this.prisma.user.findUnique({ where: { phone } });
+    if (!user || !user.isActive) return;
+    await this.otp.request(phone, OtpPurpose.LOGIN, ipAddress);
+  }
+
+  /**
+   * Point d'entrée unique côté mobile (un seul champ "numéro de téléphone",
+   * façon WhatsApp) : décide elle-même s'il s'agit d'une inscription ou
+   * d'une connexion et envoie l'OTP correspondant. Contrairement à
+   * requestLoginOtp/requestRegisterOtp (compatibilité conservée pour un
+   * usage direct), CE point d'entrée révèle nécessairement si le numéro est
+   * déjà enregistré via la valeur de `purpose` — compromis assumé : sans
+   * lui, le client ne pourrait pas savoir quel écran de vérification
+   * afficher ensuite (profil pour une inscription, PIN 2FA éventuel pour une
+   * connexion) à partir d'un unique champ de saisie.
+   */
+  async requestOtp(phone: string, ipAddress?: string): Promise<{ purpose: OtpPurpose }> {
+    const existing = await this.prisma.user.findUnique({ where: { phone } });
+    if (existing) {
+      if (!existing.isActive) throw new UnauthorizedException('Compte indisponible.');
+      await this.otp.request(phone, OtpPurpose.LOGIN, ipAddress);
+      return { purpose: OtpPurpose.LOGIN };
+    }
+    await this.otp.request(phone, OtpPurpose.REGISTER, ipAddress);
+    return { purpose: OtpPurpose.REGISTER };
+  }
+
+  /**
+   * Renvoie soit des tokens de session (2FA désactivée), soit
+   * `{ requiresTwoFactor: true, continuationToken }` à présenter ensuite à
+   * verifyTwoFactor() avec le PIN — jamais de session créée avant que le PIN
+   * ne soit vérifié quand la 2FA est active (section 3).
+   */
+  async verifyLoginOtp(dto: VerifyLoginOtpDto, context: DeviceContext) {
+    const otpRequest = await this.otp.verify(dto.phone, OtpPurpose.LOGIN, dto.code);
+    const user = await this.prisma.user.findUnique({ where: { phone: dto.phone } });
+    if (!user || !user.isActive) {
+      // Ne devrait survenir que si le compte a été supprimé entre la demande
+      // d'OTP et sa vérification (voir requestLoginOtp, qui n'envoie déjà
+      // rien pour un numéro inconnu).
+      throw new UnauthorizedException('Compte indisponible.');
+    }
+
+    if (user.twoFactorEnabled) {
+      const continuationToken = await this.otp.issueContinuationToken(otpRequest.id);
+      return { requiresTwoFactor: true as const, continuationToken };
+    }
+
+    await this.otp.consume(otpRequest.id);
+    const tokens = await this.createSession(
+      user,
+      { ...context, deviceLabel: dto.deviceLabel ?? context.deviceLabel },
+      SessionType.MOBILE,
+    );
+    return { requiresTwoFactor: false as const, user: toSafeUser(user), ...tokens };
+  }
+
+  /** Étape PIN de la 2FA (section 3) — voir verifyLoginOtp. */
+  async verifyTwoFactorPin(
+    phone: string,
+    continuationToken: string,
+    pin: string,
+    deviceLabel: string | undefined,
+    context: DeviceContext,
+  ) {
+    const otpRequest = await this.otp.findByContinuationToken(
+      phone,
+      OtpPurpose.LOGIN,
+      continuationToken,
+    );
+    const user = await this.prisma.user.findUnique({ where: { phone } });
+    if (!user || !user.isActive || !user.twoFactorEnabled || !user.twoFactorPinHash) {
+      throw new UnauthorizedException('Vérification en deux étapes indisponible.');
+    }
+
+    const pinValid = await bcrypt.compare(pin, user.twoFactorPinHash);
+    if (!pinValid) {
+      await this.otp.recordSecondFactorFailure(otpRequest.id);
+      throw new UnauthorizedException('PIN incorrect.');
+    }
+
+    await this.otp.consume(otpRequest.id);
+    const tokens = await this.createSession(
+      user,
+      { ...context, deviceLabel: deviceLabel ?? context.deviceLabel },
+      SessionType.MOBILE,
+    );
+    return { user: toSafeUser(user), ...tokens };
+  }
+
+  /** Numéro déjà unique en base (voir schema.prisma) : la boucle ne fait
+   * qu'absorber la collision statistiquement rare des 8 derniers chiffres. */
+  private async generateUsernameFromPhone(phone: string): Promise<string> {
+    const digits = phone.replace(/[^0-9]/g, '');
+    const base = `user${digits.slice(-8)}`;
+    let candidate = base;
+    let suffix = 0;
+    while (true) {
+      const taken = await this.prisma.user.findUnique({ where: { username: candidate } });
+      if (!taken) return candidate;
+      suffix += 1;
+      candidate = `${base}${suffix}`;
+    }
   }
 
   async refresh(refreshToken: string) {
@@ -225,6 +404,7 @@ export class AuthService {
     });
     return sessions.map((session) => ({
       id: session.id,
+      type: session.type,
       deviceLabel: session.deviceLabel,
       userAgent: session.userAgent,
       ipAddress: session.ipAddress,
@@ -253,6 +433,9 @@ export class AuthService {
     dto: ChangePasswordDto,
   ): Promise<void> {
     const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    if (!user.passwordHash) {
+      throw new UnauthorizedException('Ce compte ne dispose pas de mot de passe.');
+    }
     const valid = await bcrypt.compare(dto.currentPassword, user.passwordHash);
     if (!valid) throw new UnauthorizedException('Mot de passe actuel incorrect.');
 
@@ -316,10 +499,20 @@ export class AuthService {
     ]);
   }
 
-  private async createSession(user: User, context: DeviceContext): Promise<AuthTokens> {
+  /**
+   * `public` : réutilisée telle quelle par DeviceLinkService pour créer la
+   * session WEB issue d'une liaison QR (section 9) — jamais dupliquée, même
+   * logique de rotation/hash de refresh token que pour une session mobile.
+   */
+  async createSession(
+    user: User,
+    context: DeviceContext,
+    type: SessionType = SessionType.MOBILE,
+  ): Promise<AuthTokens> {
     const session = await this.prisma.userSession.create({
       data: {
         userId: user.id,
+        type,
         refreshTokenHash: '', // remplacé juste après par signTokensForSession
         userAgent: context.userAgent,
         ipAddress: context.ipAddress,

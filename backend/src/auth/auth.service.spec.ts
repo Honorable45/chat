@@ -7,6 +7,7 @@ import { AuthService } from './auth.service';
 import { LanguagesService } from '../languages/languages.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { MailService } from './mail/mail.service';
+import { OtpService } from './otp/otp.service';
 
 jest.mock('bcrypt');
 
@@ -19,6 +20,11 @@ function buildUser(overrides: Partial<User> = {}): User {
     email: 'honore@example.com',
     phone: null,
     passwordHash: 'hashed-password',
+    phoneVerifiedAt: null,
+    twoFactorEnabled: false,
+    twoFactorPinHash: null,
+    recoveryEmail: null,
+    recoveryEmailVerifiedAt: null,
     firstName: 'Honoré',
     lastName: 'K.',
     primaryLanguageId: 'lang-fr',
@@ -52,6 +58,7 @@ function buildSession(overrides: Partial<UserSession> = {}): UserSession {
   return {
     id: 'session-1',
     userId: 'user-1',
+    type: 'MOBILE',
     refreshTokenHash: '',
     previousRefreshTokenHash: null,
     userAgent: null,
@@ -88,6 +95,14 @@ describe('AuthService', () => {
   let jwt: { signAsync: jest.Mock; verifyAsync: jest.Mock };
   let config: { get: jest.Mock; getOrThrow: jest.Mock };
   let mail: { sendPasswordReset: jest.Mock };
+  let otp: {
+    request: jest.Mock;
+    verify: jest.Mock;
+    consume: jest.Mock;
+    issueContinuationToken: jest.Mock;
+    findByContinuationToken: jest.Mock;
+    recordSecondFactorFailure: jest.Mock;
+  };
   let service: AuthService;
 
   beforeEach(() => {
@@ -116,6 +131,14 @@ describe('AuthService', () => {
       getOrThrow: jest.fn((key: string) => `secret-${key}`),
     };
     mail = { sendPasswordReset: jest.fn().mockResolvedValue(undefined) };
+    otp = {
+      request: jest.fn().mockResolvedValue(undefined),
+      verify: jest.fn(),
+      consume: jest.fn().mockResolvedValue(undefined),
+      issueContinuationToken: jest.fn(),
+      findByContinuationToken: jest.fn(),
+      recordSecondFactorFailure: jest.fn().mockResolvedValue(undefined),
+    };
 
     jwt.signAsync.mockResolvedValue('signed-token');
     mockedBcrypt.hash.mockResolvedValue('hashed-value' as never);
@@ -126,6 +149,7 @@ describe('AuthService', () => {
       jwt as unknown as JwtService,
       config as unknown as ConfigService,
       mail as unknown as MailService,
+      otp as unknown as OtpService,
     );
   });
 
