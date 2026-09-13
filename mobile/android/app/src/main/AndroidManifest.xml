@@ -20,6 +20,12 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Notifications push mobiles (voir NotificationService) — obligatoire
+         à partir d'Android 13 (API 33) pour afficher quelque notification
+         que ce soit, y compris locale ; VIBRATE pour le motif distinct du
+         canal "Appels entrants". -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <application
         android:label="glotta_mobile"
         android:name="${applicationName}"

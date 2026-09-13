@@ -11,6 +11,7 @@ import { ContactsService } from '../contacts/contacts.service';
 import { GroupCallMessageDto, GroupCallsService } from '../group-calls/group-calls.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { FcmProvider } from '../push/fcm.provider';
 import { PushProvider } from '../push/push.provider';
 import { resolveAvatarUrl } from '../profiles/avatar.util';
 
@@ -152,6 +153,7 @@ export class CallsService {
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly push: PushProvider,
+    private readonly fcm: FcmProvider,
     private readonly contacts: ContactsService,
     private readonly groupCalls: GroupCallsService,
   ) {}
@@ -538,7 +540,9 @@ export class CallsService {
         expiresIn: CALL_REJECT_TOKEN_TTL,
       },
     );
-    await this.push.sendCallInvite(calleeId, { callId, conversationId, kind, rejectToken });
+    const invite = { callId, conversationId, kind, rejectToken };
+    await this.push.sendCallInvite(calleeId, invite);
+    await this.fcm.sendCallInvite(calleeId, invite);
   }
 
   private async notifyMissed(call: CallWithMessage): Promise<void> {

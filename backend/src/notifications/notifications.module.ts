@@ -10,7 +10,8 @@ import { NotificationsService } from './notifications.service';
   // PresenceModule ajouté pour PresenceService.isViewingConversation (voir
   // NotificationsService.create) — aucun forwardRef nécessaire : Presence ne
   // dépend jamais de Notifications, le graphe reste un DAG. PushModule pour
-  // PushProvider (notifications hors de l'app, même méthode create()).
+  // PushProvider/FcmProvider (notifications hors de l'app — web et mobile,
+  // même méthode create()).
   imports: [AuthModule, WebsocketModule, PresenceModule, PushModule],
   controllers: [NotificationsController],
   providers: [NotificationsService],

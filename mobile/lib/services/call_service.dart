@@ -186,6 +186,31 @@ class CallService extends ChangeNotifier {
     };
   }
 
+  /// Reprend un appel entrant après ouverture de l'app depuis l'action
+  /// "Répondre" d'une notification push système (voir NotificationService)
+  /// — aucun événement `call:incoming` n'a pu être reçu tant que le socket
+  /// `/calls` n'existait pas (app fermée à l'invitation). Simule le même
+  /// effet que ce handler à partir de l'état authoritative du serveur, sans
+  /// rien réémettre — accept()/reject() suivent ensuite leur chemin normal.
+  /// Même principe que `useCall.resumeIncoming` côté web.
+  Future<void> resumeIncoming(String callId) async {
+    if (phase != CallPhase.idle) return;
+    try {
+      final message = await ApiClient.instance.getCall(callId);
+      if (message.call.status != 'RINGING') return;
+      _setState(
+        phase: CallPhase.incoming,
+        conversationId: message.conversationId,
+        callId: message.call.id,
+        otherUserId: message.call.callerId,
+        kind: message.call.type,
+        error: null,
+      );
+    } catch (_) {
+      // Appel déjà résolu (accepté/refusé/expiré) avant l'ouverture de l'app — rien à afficher.
+    }
+  }
+
   Future<void> start(String conversationId, String calleeId, CallKind kind) async {
     if (phase != CallPhase.idle) return;
     await _ensureRenderers();

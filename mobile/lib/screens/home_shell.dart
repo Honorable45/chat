@@ -13,6 +13,7 @@ import 'settings/profile_screen.dart';
 import 'statuses/statuses_screen.dart';
 import '../services/api_client.dart';
 import '../services/call_service.dart';
+import '../services/notification_service.dart';
 import '../widgets/icon_rail.dart';
 
 /// Port de la structure générale de `chat/page.tsx` : rail d'icônes à
@@ -45,6 +46,15 @@ class _HomeShellState extends ConsumerState<HomeShell> {
     // correctif incrémental (les appels restent des événements rares).
     CallService.instance.onCallMessage = (_) => ref.read(conversationsProvider.notifier).load();
     CallService.instance.addListener(_onCallServiceChanged);
+
+    // Ouverture de l'app depuis l'action "Répondre" d'une notification
+    // d'appel système (voir NotificationService) — aucun événement
+    // `call:incoming` n'a pu être reçu tant que l'app était fermée.
+    final pendingCallId = NotificationService.pendingIncomingCallId;
+    if (pendingCallId != null) {
+      NotificationService.pendingIncomingCallId = null;
+      CallService.instance.resumeIncoming(pendingCallId);
+    }
   }
 
   @override

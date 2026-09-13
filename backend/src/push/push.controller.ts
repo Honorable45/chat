@@ -15,6 +15,7 @@ import type { Request } from 'express';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuthenticatedUser } from '../auth/interfaces/jwt-payload.interface';
+import { RegisterFcmTokenDto } from './dto/register-fcm-token.dto';
 import { SubscribePushDto } from './dto/subscribe-push.dto';
 import { UnsubscribePushDto } from './dto/unsubscribe-push.dto';
 import { PushService } from './push.service';
@@ -54,5 +55,24 @@ export class PushController {
   @HttpCode(HttpStatus.NO_CONTENT)
   unsubscribe(@CurrentUser() user: AuthenticatedUser, @Body() dto: UnsubscribePushDto) {
     return this.push.unsubscribe(user.userId, dto.endpoint);
+  }
+
+  // --- Notifications push mobiles (FCM) — voir FcmProvider ---
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 15, ttl: 60_000 } })
+  @Post('fcm/register')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  registerFcmToken(@CurrentUser() user: AuthenticatedUser, @Body() dto: RegisterFcmTokenDto) {
+    return this.push.registerFcmToken(user.sessionId, dto.token);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 15, ttl: 60_000 } })
+  @Delete('fcm/register')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  unregisterFcmToken(@CurrentUser() user: AuthenticatedUser) {
+    return this.push.unregisterFcmToken(user.sessionId);
   }
 }

@@ -19,8 +19,9 @@ import { CallsService } from './calls.service';
   // calls.gateway.ts pour la raison (éviter un cycle de modules à trois sauts).
   // PushModule importé directement (plutôt que de passer par
   // NotificationsModule, qui l'importe déjà) : CallsService a besoin de
-  // PushProvider.sendCallInvite, une méthode dédiée hors du chemin générique
-  // de NotificationsService — voir le commentaire sur PUSH_EXCLUDED_TYPES.
+  // PushProvider.sendCallInvite ET FcmProvider.sendCallInvite (web et
+  // mobile), des méthodes dédiées hors du chemin générique de
+  // NotificationsService — voir le commentaire sur PUSH_EXCLUDED_TYPES.
   // ContactsModule : CallsService.escalateToGroup vérifie que l'invité d'un
   // appel simple devenu appel de groupe est bien un contact accepté de
   // l'appelant (aucun des deux ne fait partie de la conversation DIRECT

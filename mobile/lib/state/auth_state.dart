@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/auth_flow.dart';
 import '../models/user.dart';
 import '../services/api_client.dart';
 import '../services/call_service.dart';
+import '../services/notification_service.dart';
 import '../services/socket_service.dart';
 import '../services/token_store.dart';
 
@@ -49,6 +51,7 @@ class AuthNotifier extends Notifier<AuthState> {
       state = AuthState(status: AuthStatus.authenticated, me: me);
       SocketService.instance.connect();
       CallService.instance.connect();
+      unawaited(NotificationService.instance.requestPermissionAndRegister());
     } catch (_) {
       await TokenStore.instance.clear();
       state = const AuthState(status: AuthStatus.unauthenticated);
@@ -56,6 +59,11 @@ class AuthNotifier extends Notifier<AuthState> {
   }
 
   void _onUnauthorized() {
+    // Jamais d'appel à NotificationService.unregister() ici : le jeton
+    // d'accès est déjà invalide à ce stade (c'est justement pourquoi on est
+    // là), un DELETE authentifié échouerait pour rien — la session est de
+    // toute façon déjà révoquée côté serveur, FcmProvider ne lui enverra
+    // plus rien (voir `where: revokedAt: null`).
     TokenStore.instance.clear();
     SocketService.instance.disconnect();
     CallService.instance.disconnect();
@@ -175,6 +183,7 @@ class AuthNotifier extends Notifier<AuthState> {
 
   Future<void> logout() async {
     try {
+      await NotificationService.instance.unregister();
       await ApiClient.instance.logout();
     } catch (_) {
       // best-effort — on efface la session locale même si l'appel échoue.

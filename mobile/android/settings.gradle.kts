@@ -29,6 +29,12 @@ plugins {
     // déjà éprouvée sur cette machine (caches Gradle 8.x préexistants).
     id("com.android.application") version "8.9.1" apply false
     id("org.jetbrains.kotlin.android") version "2.2.20" apply false
+    // Notifications push mobiles (voir FcmProvider côté backend) — appliqué
+    // seulement si android/app/google-services.json existe (voir
+    // app/build.gradle.kts) : sans ce fichier, `apply false` ici suffit à
+    // déclarer le plugin disponible sans jamais le déclencher, donc jamais
+    // d'échec de build tant que Firebase n'est pas configuré.
+    id("com.google.gms.google-services") version "4.4.2" apply false
 }
 
 include(":app")

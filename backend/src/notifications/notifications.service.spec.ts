@@ -2,6 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import type { Notification, Profile } from '@prisma/client';
 import { PresenceService } from '../presence/presence.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { FcmProvider } from '../push/fcm.provider';
 import { PushProvider } from '../push/push.provider';
 import { EventsGateway } from '../websocket/events.gateway';
 import { NotificationsService } from './notifications.service';
@@ -57,6 +58,7 @@ describe('NotificationsService', () => {
   let events: { emitToUser: jest.Mock };
   let presence: { isViewingConversation: jest.Mock };
   let push: { sendToUser: jest.Mock };
+  let fcm: { sendToUser: jest.Mock };
   let service: NotificationsService;
 
   beforeEach(() => {
@@ -75,11 +77,13 @@ describe('NotificationsService', () => {
     events = { emitToUser: jest.fn() };
     presence = { isViewingConversation: jest.fn().mockReturnValue(false) };
     push = { sendToUser: jest.fn().mockResolvedValue(undefined) };
+    fcm = { sendToUser: jest.fn().mockResolvedValue(undefined) };
     service = new NotificationsService(
       prisma as unknown as PrismaService,
       events as unknown as EventsGateway,
       presence as unknown as PresenceService,
       push as unknown as PushProvider,
+      fcm as unknown as FcmProvider,
     );
   });
 

@@ -12,3 +12,8 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+
+# Config Firebase (FCM) — spécifique à chaque projet Firebase/environnement,
+# jamais commité (voir app/build.gradle.kts, plugin appliqué seulement si
+# ce fichier existe).
+google-services.json

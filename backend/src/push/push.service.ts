@@ -45,4 +45,27 @@ export class PushService {
     }
     await this.prisma.pushSubscription.delete({ where: { endpoint } });
   }
+
+  /**
+   * Associe un jeton FCM à LA session courante (voir AuthenticatedUser.sessionId,
+   * jamais à l'utilisateur directement) — chaque appareil mobile a sa
+   * propre session et son propre jeton, exactement comme "Appareils
+   * connectés" (AuthService.listSessions) distingue déjà les sessions
+   * entre elles. `updateMany` (jamais `update`) : une session déjà révoquée
+   * entre-temps ne doit pas se voir réattribuer un jeton, silencieusement
+   * ignoré plutôt qu'une erreur qui casserait l'app au premier plan.
+   */
+  async registerFcmToken(sessionId: string, token: string): Promise<void> {
+    await this.prisma.userSession.updateMany({
+      where: { id: sessionId, revokedAt: null },
+      data: { fcmToken: token },
+    });
+  }
+
+  async unregisterFcmToken(sessionId: string): Promise<void> {
+    await this.prisma.userSession.updateMany({
+      where: { id: sessionId },
+      data: { fcmToken: null },
+    });
+  }
 }

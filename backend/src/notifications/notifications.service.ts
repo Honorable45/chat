@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { Notification, NotificationType, Prisma } from '@prisma/client';
 import { PresenceService } from '../presence/presence.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { FcmProvider } from '../push/fcm.provider';
 import { PushProvider } from '../push/push.provider';
 import { EventsGateway } from '../websocket/events.gateway';
 import { buildPushText, buildPushUrl } from './push-text.util';
@@ -65,6 +66,7 @@ export class NotificationsService {
     private readonly events: EventsGateway,
     private readonly presence: PresenceService,
     private readonly push: PushProvider,
+    private readonly fcm: FcmProvider,
   ) {}
 
   /**
@@ -107,10 +109,12 @@ export class NotificationsService {
     // création de la notification elle-même — voir PushProvider.sendToUser,
     // déjà best-effort en interne.
     if (!PUSH_EXCLUDED_TYPES.has(type)) {
-      void this.push.sendToUser(userId, {
+      const pushMessage = {
         ...buildPushText(type, enrichedPayload),
         url: buildPushUrl(enrichedPayload),
-      });
+      };
+      void this.push.sendToUser(userId, pushMessage);
+      void this.fcm.sendToUser(userId, pushMessage);
     }
 
     return dto;

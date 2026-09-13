@@ -133,6 +133,11 @@ model UserSession {
   userAgent                String?
   ipAddress                String?
   deviceLabel              String?
+  // Jeton FCM de CET appareil (voir FcmProvider) — jamais partagé entre
+  // sessions : une notification/appel push ne part que vers les sessions
+  // encore actives (revokedAt: null), naturellement cohérent avec
+  // "Appareils connectés" (déconnecter un appareil y coupe aussi ses push).
+  fcmToken                 String?
 
   createdAt  DateTime  @default(now())
   lastUsedAt DateTime  @default(now())

@@ -6,6 +6,7 @@ import '../models/language.dart';
 import '../models/message.dart';
 import '../models/notification.dart';
 import '../models/auth_flow.dart';
+import '../models/call.dart';
 import '../models/public_user.dart';
 import '../models/status.dart';
 import '../models/user.dart';
@@ -755,5 +756,26 @@ class ApiClient {
       () => _dio.get('/calls/ice-servers'),
       (data) => (data as List<dynamic>).cast<Map<String, dynamic>>(),
     );
+  }
+
+  /// Reprend un appel entrant après ouverture de l'app depuis l'action
+  /// "Répondre" d'une notification push système (voir
+  /// CallService.resumeIncoming) — aucun événement socket 'call:incoming'
+  /// n'a pu être reçu tant que l'app était fermée.
+  Future<CallMessageDto> getCall(String callId) {
+    return _guard(
+      () => _dio.get('/calls/$callId'),
+      (data) => CallMessageDto.fromJson(data as Map<String, dynamic>),
+    );
+  }
+
+  // ---- Notifications push mobiles (FCM) ----
+
+  Future<void> registerFcmToken(String token) {
+    return _guard(() => _dio.post('/push/fcm/register', data: {'token': token}), (_) {});
+  }
+
+  Future<void> unregisterFcmToken() {
+    return _guard(() => _dio.delete('/push/fcm/register'), (_) {});
   }
 }

@@ -26,6 +26,10 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // Requis par flutter_local_notifications (APIs Java 8+ pour la
+        // planification de notifications) — sans ça, checkDebugAarMetadata
+        // échoue au build même en debug.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     defaultConfig {
@@ -68,4 +72,18 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+// Notifications push mobiles (FCM, voir FcmProvider côté backend et
+// notification_service.dart côté Flutter) — appliqué seulement si le
+// fichier existe (voir settings.gradle.kts, plugin déclaré "apply false"
+// juste pour ça) : un clone frais sans google-services.json continue de
+// compiler normalement, Firebase reste simplement non initialisé au
+// runtime (voir NotificationService.init, qui gère cet échec proprement).
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }

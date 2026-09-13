@@ -2,9 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/router.dart';
 import 'core/theme.dart';
+import 'services/notification_service.dart';
 import 'state/theme_state.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Avant `runApp` (exigence Firebase pour `onBackgroundMessage`) —
+  // silencieux si `google-services.json` est absent, voir
+  // NotificationService.init. L'enregistrement du jeton lui-même n'a lieu
+  // qu'après authentification (voir AuthNotifier._loadMe).
+  await NotificationService.instance.init();
   runApp(const ProviderScope(child: GlottaApp()));
 }
 

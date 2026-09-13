@@ -6,6 +6,7 @@ import { ContactsService } from '../contacts/contacts.service';
 import { GroupCallsService } from '../group-calls/group-calls.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { FcmProvider } from '../push/fcm.provider';
 import { PushProvider } from '../push/push.provider';
 import { CallsService } from './calls.service';
 
@@ -48,6 +49,7 @@ describe('CallsService', () => {
   let jwt: { signAsync: jest.Mock; verifyAsync: jest.Mock };
   let config: { getOrThrow: jest.Mock };
   let push: { sendCallInvite: jest.Mock };
+  let fcm: { sendCallInvite: jest.Mock };
   let contacts: { areContacts: jest.Mock };
   let groupCalls: { startFromEscalation: jest.Mock };
   let service: CallsService;
@@ -66,6 +68,7 @@ describe('CallsService', () => {
     };
     config = { getOrThrow: jest.fn().mockReturnValue('call-action-secret') };
     push = { sendCallInvite: jest.fn().mockResolvedValue(undefined) };
+    fcm = { sendCallInvite: jest.fn().mockResolvedValue(undefined) };
     contacts = { areContacts: jest.fn().mockResolvedValue(true) };
     groupCalls = { startFromEscalation: jest.fn() };
     service = new CallsService(
@@ -74,6 +77,7 @@ describe('CallsService', () => {
       jwt as unknown as JwtService,
       config as unknown as ConfigService,
       push as unknown as PushProvider,
+      fcm as unknown as FcmProvider,
       contacts as unknown as ContactsService,
       groupCalls as unknown as GroupCallsService,
     );

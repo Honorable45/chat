@@ -64,6 +64,7 @@ function buildSession(overrides: Partial<UserSession> = {}): UserSession {
     userAgent: null,
     ipAddress: null,
     deviceLabel: null,
+    fcmToken: null,
     createdAt: new Date(),
     lastUsedAt: new Date(),
     expiresAt: new Date(Date.now() + 1000 * 60 * 60),
