@@ -107,9 +107,8 @@ Reprenez `backend/.env.example` et changez impérativement :
 | `CALL_ACTION_JWT_SECRET` | Un troisième secret fort (`openssl rand -hex 32`), **distinct** des deux ci-dessus — jeton du bouton "Refuser" d'une notification push d'appel entrant (voir `CallsService.quickReject`) |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | Générées une fois avec `npx web-push generate-vapid-keys` (`VAPID_SUBJECT` = `mailto:<votre email>`) — **sans ces 3 variables, aucune notification push (message, appel manqué, appel entrant...) n'est envoyée**, même si tout le reste fonctionne : `PushProvider` retombe silencieusement sur "rien n'est envoyé" plutôt que d'échouer, donc l'oubli ne se voit dans aucun log d'erreur |
 | `CORS_ORIGIN` | Domaines Vercel de `frontend/` **et** `admin/`, séparés par une virgule (ex. `https://glotta.vercel.app,https://admin-glotta.vercel.app`) — sert aussi au nouveau namespace WebSocket `/device-link` (liaison Web par QR), rien de plus à configurer pour lui |
-| `SMS_PROVIDER` | `"textbee"` **avant tout lancement réel** — voir ⚠️ ci-dessous, `"none"` ne fait que journaliser le code OTP côté serveur |
-| `TEXTBEE_API_KEY` | Clé API du Dashboard TextBee (app.textbee.dev/dashboard) — requise si `SMS_PROVIDER="textbee"` |
-| `TEXTBEE_DEVICE_ID` | Identifiant de l'appareil Android relais (dashboard TextBee) — optionnel si un seul appareil est enregistré |
+| `SMS_PROVIDER` | `"zavu"` **avant tout lancement réel** — voir ⚠️ ci-dessous, `"none"` ne fait que journaliser le code OTP côté serveur |
+| `ZAVUDEV_API_KEY` | Clé API du Dashboard Zavu (dashboard.zavu.dev) — requise si `SMS_PROVIDER="zavu"` |
 | `STORAGE_LOCAL_PATH` | Chemin du volume persistant monté (messages vocaux uniquement, voir ci-dessus) |
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Identifiants du Dashboard Cloudinary — active le stockage de tous les médias (images, vidéos, avatars, photos de groupe, messages vocaux, audio traduit) |
 | `ADMIN_BOOTSTRAP_EMAIL` | Email d'un compte déjà inscrit, pour la toute première promotion admin — voir §4, à retirer une fois utilisé |
@@ -118,7 +117,7 @@ Les fournisseurs IA (`STT_PROVIDER`, `TRANSLATION_PROVIDER`,
 `TTS_PROVIDER` + leurs clés) restent optionnels (`"none"` par défaut) —
 activez-les seulement une fois prêt, aucun changement de code nécessaire.
 
-### ⚠️ Inscription/connexion par téléphone : sans TextBee, aucun SMS réel n'est envoyé
+### ⚠️ Inscription/connexion par téléphone : sans Zavu, aucun SMS réel n'est envoyé
 
 Depuis l'authentification par téléphone + OTP (`AuthService.requestOtp` et
 consorts), **tant que `SMS_PROVIDER="none"`** (valeur par défaut), le code à
@@ -127,17 +126,15 @@ comportement volontaire pour le développement — voir le commentaire dans le
 fichier) — **jamais envoyé par SMS**. En production, ça revient à rendre
 l'inscription/la connexion mobile inutilisables pour un vrai utilisateur (il
 n'a aucun moyen de lire les logs Render). Avant tout lancement réel :
-1. Créez un compte sur https://textbee.dev, installez l'app Android TextBee
-   sur un téléphone avec une carte SIM active et enregistrez l'appareil.
-2. Générez une clé API depuis le dashboard (app.textbee.dev/dashboard).
-3. Renseignez `TEXTBEE_API_KEY` (et `TEXTBEE_DEVICE_ID` si plusieurs
-   appareils sont enregistrés), `SMS_PROVIDER="textbee"`.
+1. Créez un compte sur https://zavu.dev et ouvrez le dashboard Zavu.
+2. Générez une clé API depuis le dashboard (dashboard.zavu.dev).
+3. Renseignez `ZAVUDEV_API_KEY` et `SMS_PROVIDER="zavu"`.
 4. Testez un vrai envoi (`POST /auth/otp/request` avec un numéro réel) avant
    d'annoncer la fonctionnalité aux utilisateurs.
 
 Le mot de passe classique (`/auth/login`, `/auth/register`) reste
 fonctionnel en parallèle (conservé pour l'accès admin/outillage) — seul le
-nouveau parcours téléphone dépend de TextBee.
+nouveau parcours téléphone dépend de Zavu.
 
 ### Health check
 
@@ -214,7 +211,7 @@ modifie que `isActive`, jamais `role`, par design).
 - [ ] `ADMIN_BOOTSTRAP_EMAIL` utilisé puis retiré
 - [ ] Health check backend configuré sur `/api/health`
 - [ ] `DISABLE_RATE_LIMITING` absent de l'environnement de production (réservé à `.env.test`)
-- [ ] `SMS_PROVIDER="textbee"` + `TEXTBEE_API_KEY` renseigné (sans quoi l'inscription/connexion par téléphone ne fonctionne pour aucun utilisateur réel — voir §2)
+- [ ] `SMS_PROVIDER="zavu"` + `ZAVUDEV_API_KEY` renseigné (sans quoi l'inscription/connexion par téléphone ne fonctionne pour aucun utilisateur réel — voir §2)
 - [ ] Un vrai SMS de test reçu sur un téléphone avant d'annoncer la fonctionnalité
 
 ## 5. Application mobile (Flutter)

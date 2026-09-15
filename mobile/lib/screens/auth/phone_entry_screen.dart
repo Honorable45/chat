@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/theme.dart';
+import '../../models/auth_flow.dart';
 import '../../services/api_client.dart';
 import '../../state/auth_state.dart';
 import '../../widgets/auth_shell.dart';
@@ -38,6 +39,12 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
     try {
       final purpose = await ref.read(authProvider.notifier).requestOtp(phone);
       if (!mounted) return;
+
+      if (purpose == OtpPurpose.register) {
+        await ref.read(authProvider.notifier).verifyRegisterOtp(phone: phone, code: '000000');
+        return;
+      }
+
       await Navigator.of(context).push(
         MaterialPageRoute(builder: (_) => OtpVerifyScreen(phone: phone, purpose: purpose)),
       );
@@ -57,7 +64,7 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
       title: 'Bienvenue sur Glotta',
       subtitle: 'Entrez votre numéro de téléphone pour commencer.',
       footer: Text(
-        'Un code de vérification vous sera envoyé par SMS.',
+        'Votre compte sera créé directement si vous êtes nouveau.',
         style: TextStyle(color: c.muted),
       ),
       child: Column(

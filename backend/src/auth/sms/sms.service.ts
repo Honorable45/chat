@@ -1,18 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-const TEXTBEE_SEND_URL = 'https://api.textbee.dev/api/v1/gateway/send-sms';
+const ZAVU_SEND_URL = 'https://api.zavu.dev/v1/messages';
 
 /**
  * Envoi de SMS (code OTP) — même convention que MailService pour l'email
  * (voir auth/mail/mail.service.ts) : SMS_PROVIDER="none" journalise le code
  * au lieu de l'envoyer réellement (dev uniquement, jamais présenté comme un
- * vrai envoi), SMS_PROVIDER="textbee" appelle l'API TextBee (passerelle SMS
- * qui relaie via un téléphone Android connecté, voir
- * https://textbee.dev/docs). Remplacer cette classe par un autre fournisseur
- * ne change que son intérieur, jamais ses appelants (OtpService).
+ * vrai envoi), SMS_PROVIDER="zavu" appelle l'API SMS Zavu. Remplacer cette
+ * classe par un autre fournisseur ne change que son intérieur, jamais ses
+ * appelants (OtpService).
  *
- * Ne journalise JAMAIS TEXTBEE_API_KEY ni le code lui-même en dehors du
+ * Ne journalise JAMAIS ZAVUDEV_API_KEY ni le code lui-même en dehors du
  * mode "none" (où le code est le seul moyen de le récupérer en dev) —
  * voir sendOtp().
  */
@@ -27,7 +26,7 @@ export class SmsService {
   }
 
   isDevMode(): boolean {
-    return this.getProvider() !== 'textbee';
+    return this.getProvider() !== 'zavu';
   }
 
   /**
@@ -41,38 +40,40 @@ export class SmsService {
     if (this.isDevMode()) {
       // Volontairement en clair ICI UNIQUEMENT (mode développement, jamais en
       // production tant que SMS_PROVIDER reste "none") — c'est le seul moyen
-      // de tester le parcours OTP sans compte TextBee réel.
+      // de tester le parcours OTP sans clé Zavu réelle.
       this.logger.warn(
         `SMS_PROVIDER non configuré — code OTP pour ${this.maskPhone(phone)} (dev uniquement, non envoyé par SMS) : ${code}`,
       );
       return;
     }
 
-    const apiKey = this.config.getOrThrow<string>('TEXTBEE_API_KEY');
-    const deviceId = this.config.get<string>('TEXTBEE_DEVICE_ID');
+    const apiKey = this.config.getOrThrow<string>('ZAVUDEV_API_KEY');
 
     try {
-      const response = await fetch(TEXTBEE_SEND_URL, {
+      const response = await fetch(ZAVU_SEND_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
-          recipients: [phone],
-          message: text,
-          ...(deviceId ? { deviceId } : {}),
+          to: phone,
+          text,
+          channel: 'sms',
         }),
       });
       if (!response.ok) {
         const body = await response.text().catch(() => '');
         this.logger.error(
-          `Échec d'envoi SMS TextBee pour ${this.maskPhone(phone)} : HTTP ${response.status} (${body.slice(0, 200)})`,
+          `Échec d'envoi SMS Zavu pour ${this.maskPhone(phone)} : HTTP ${response.status} (${body.slice(0, 200)})`,
         );
         throw new Error("Échec de l'envoi du SMS.");
       }
     } catch (error) {
-      // Jamais TEXTBEE_API_KEY ni le code OTP dans ce log — seul le numéro
+      // Jamais ZAVUDEV_API_KEY ni le code OTP dans ce log — seul le numéro
       // (masqué) et un message d'erreur générique.
       this.logger.error(
-        `Erreur TextBee pour ${this.maskPhone(phone)} : ${error instanceof Error ? error.message : 'erreur inconnue'}`,
+        `Erreur Zavu pour ${this.maskPhone(phone)} : ${error instanceof Error ? error.message : 'erreur inconnue'}`,
       );
       throw error;
     }
