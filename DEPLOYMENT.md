@@ -109,6 +109,7 @@ Reprenez `backend/.env.example` et changez impérativement :
 | `CORS_ORIGIN` | Domaines Vercel de `frontend/` **et** `admin/`, séparés par une virgule (ex. `https://glotta.vercel.app,https://admin-glotta.vercel.app`) — sert aussi au nouveau namespace WebSocket `/device-link` (liaison Web par QR), rien de plus à configurer pour lui |
 | `SMS_PROVIDER` | `"zavu"` **avant tout lancement réel** — voir ⚠️ ci-dessous, `"none"` ne fait que journaliser le code OTP côté serveur |
 | `ZAVUDEV_API_KEY` | Clé API du Dashboard Zavu (dashboard.zavu.dev) — requise si `SMS_PROVIDER="zavu"` |
+| `ZAVU_SENDER` | Sender Zavu optionnel — doit être un numéro de téléphone associé au SMS, pas un identifiant de sender sans numéro |
 | `STORAGE_LOCAL_PATH` | Chemin du volume persistant monté (messages vocaux uniquement, voir ci-dessus) |
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Identifiants du Dashboard Cloudinary — active le stockage de tous les médias (images, vidéos, avatars, photos de groupe, messages vocaux, audio traduit) |
 | `ADMIN_BOOTSTRAP_EMAIL` | Email d'un compte déjà inscrit, pour la toute première promotion admin — voir §4, à retirer une fois utilisé |
@@ -128,7 +129,9 @@ l'inscription/la connexion mobile inutilisables pour un vrai utilisateur (il
 n'a aucun moyen de lire les logs Render). Avant tout lancement réel :
 1. Créez un compte sur https://zavu.dev et ouvrez le dashboard Zavu.
 2. Générez une clé API depuis le dashboard (dashboard.zavu.dev).
-3. Renseignez `ZAVUDEV_API_KEY` et `SMS_PROVIDER="zavu"`.
+3. Renseignez `ZAVUDEV_API_KEY` et `SMS_PROVIDER="zavu"`. Ne renseignez
+   `ZAVU_SENDER` que si un numéro de téléphone SMS est bien associé à ce sender;
+   sinon laissez-le vide pour utiliser le sender SMS par défaut du projet.
 4. Testez un vrai envoi (`POST /auth/otp/request` avec un numéro réel) avant
    d'annoncer la fonctionnalité aux utilisateurs.
 

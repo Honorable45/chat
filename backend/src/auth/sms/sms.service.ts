@@ -47,19 +47,19 @@ export class SmsService {
       return;
     }
 
-    const apiKey = this.config.getOrThrow<string>('ZAVUDEV_API_KEY');
-
     try {
+      const apiKey = this.config.getOrThrow<string>('ZAVUDEV_API_KEY');
+      const sender = this.config.get<string>('ZAVU_SENDER');
       const response = await fetch(ZAVU_SEND_URL, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
+          ...(sender ? { 'Zavu-Sender': sender } : {}),
         },
         body: JSON.stringify({
           to: phone,
           text,
-          channel: 'sms',
         }),
       });
       if (!response.ok) {
@@ -69,6 +69,13 @@ export class SmsService {
         );
         throw new Error("Échec de l'envoi du SMS.");
       }
+
+      const result = (await response.json().catch(() => null)) as {
+        message?: { id?: string; status?: string };
+      } | null;
+      this.logger.log(
+        `SMS Zavu accepté pour ${this.maskPhone(phone)} : id=${result?.message?.id ?? 'inconnu'}, statut=${result?.message?.status ?? 'inconnu'}`,
+      );
     } catch (error) {
       // Jamais ZAVUDEV_API_KEY ni le code OTP dans ce log — seul le numéro
       // (masqué) et un message d'erreur générique.
