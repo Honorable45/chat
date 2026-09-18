@@ -84,6 +84,62 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
     );
   }
 
+  /// Changement de numéro (section 4) : obligatoirement OTP-gated côté
+  /// backend (POST auth/phone/request-change puis auth/phone/verify-change)
+  /// — jamais un simple updateMe(phone:), qui n'accepte plus ce champ.
+  Future<void> _changePhone() async {
+    final newPhone = await _promptText(title: 'Nouveau numéro', hint: '+22890000000');
+    if (newPhone == null || newPhone.isEmpty) return;
+    try {
+      await ApiClient.instance.requestPhoneChangeOtp(newPhone);
+    } on ApiException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      return;
+    }
+    if (!mounted) return;
+    final code = await _promptText(
+      title: 'Code reçu par SMS',
+      maxLength: 6,
+      keyboardType: TextInputType.number,
+    );
+    if (code == null || code.isEmpty) return;
+    try {
+      await ApiClient.instance.verifyPhoneChangeOtp(newPhone: newPhone, code: code);
+      await _refreshMe();
+    } on ApiException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+
+  Future<String?> _promptText({
+    required String title,
+    String? hint,
+    int? maxLength,
+    TextInputType? keyboardType,
+  }) {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: maxLength,
+          keyboardType: keyboardType,
+          decoration: InputDecoration(hintText: hint),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('Annuler')),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(controller.text.trim()),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _editText({
     required String title,
     required String initial,
@@ -228,12 +284,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
             icon: Icons.phone_outlined,
             label: 'Téléphone',
             value: me.phone?.isNotEmpty == true ? me.phone! : 'Ajouter un numéro',
-            onTap: () => _editText(
-              title: 'Téléphone',
-              initial: me.phone ?? '',
-              maxLength: 15,
-              onSave: (value) => ApiClient.instance.updateMe(phone: value),
-            ),
+            onTap: _changePhone,
           ),
         ],
       ),

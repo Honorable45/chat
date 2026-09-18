@@ -1,5 +1,6 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from '../../src/app.module';
 import { HttpExceptionFilter } from '../../src/common/filters/http-exception.filter';
@@ -24,6 +25,7 @@ export async function createTestApp(): Promise<INestApplication> {
 
   const app = moduleRef.createNestApplication();
   app.use(helmet({ contentSecurityPolicy: false }));
+  app.use(cookieParser());
   app.setGlobalPrefix('api');
   app.useGlobalFilters(new HttpExceptionFilter());
   app.enableCors({

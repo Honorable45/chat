@@ -7,10 +7,16 @@ export class VerifyRegisterOtpDto {
   @Matches(/^\+?[0-9]{7,15}$/, { message: 'Numéro de téléphone invalide.' })
   phone!: string;
 
-  @ApiProperty({ example: '583214' })
+  // Optionnel tant que la bascule REGISTRATION_OTP_ENABLED reste désactivée
+  // (voir AuthService.isRegistrationOtpEnabled) : aucun code n'est alors
+  // jamais vérifié, la valeur envoyée (si présente) est ignorée. Redevient
+  // implicitement requis dès la réactivation (OtpService.verify échoue sans
+  // code exploitable).
+  @ApiPropertyOptional({ example: '583214' })
+  @IsOptional()
   @IsString()
   @Matches(/^[0-9]{6}$/, { message: 'Code invalide.' })
-  code!: string;
+  code?: string;
 
   // Optionnels comme pour l'inscription classique (voir RegisterDto) : sans
   // eux, le nom d'utilisateur généré automatiquement (voir

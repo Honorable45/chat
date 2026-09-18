@@ -122,12 +122,14 @@ class ConversationLastMessage {
 class ConversationMembership {
   final bool isArchived;
   final bool isMuted;
+  final bool isPinned;
   final DateTime? lastReadAt;
   final String role;
 
   const ConversationMembership({
     required this.isArchived,
     required this.isMuted,
+    this.isPinned = false,
     this.lastReadAt,
     required this.role,
   });
@@ -135,6 +137,7 @@ class ConversationMembership {
   factory ConversationMembership.fromJson(Map<String, dynamic> json) => ConversationMembership(
         isArchived: json['isArchived'] as bool? ?? false,
         isMuted: json['isMuted'] as bool? ?? false,
+        isPinned: json['isPinned'] as bool? ?? false,
         lastReadAt:
             json['lastReadAt'] == null ? null : DateTime.parse(json['lastReadAt'] as String),
         role: json['role'] as String? ?? 'MEMBER',

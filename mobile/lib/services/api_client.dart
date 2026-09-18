@@ -317,6 +317,25 @@ class ApiClient {
     );
   }
 
+  // --- Changement de numéro (section 4 : obligatoirement une nouvelle
+  // vérification OTP, jamais via updateMe, qui n'accepte plus `phone`) ---
+
+  Future<void> requestPhoneChangeOtp(String newPhone) {
+    return _guard(
+      () => _dio.post('/auth/phone/request-change', data: {'newPhone': newPhone}),
+      (_) {},
+    );
+  }
+
+  /// Le backend renvoie un SafeUser minimal (pas de `profile`) — on refait
+  /// `me()` juste après, même approche que `setAvatar`/`removeAvatar`.
+  Future<void> verifyPhoneChangeOtp({required String newPhone, required String code}) {
+    return _guard(
+      () => _dio.post('/auth/phone/verify-change', data: {'newPhone': newPhone, 'code': code}),
+      (_) {},
+    );
+  }
+
   // --- Sessions / appareils connectés ---
 
   Future<List<SessionSummary>> sessions() {
@@ -337,11 +356,13 @@ class ApiClient {
     return _guard(() => _dio.get('/users/me'), (data) => Me.fromJson(data as Map<String, dynamic>));
   }
 
+  // Pas de paramètre `phone` ici (section 4) : un changement de numéro passe
+  // obligatoirement par requestPhoneChangeOtp/verifyPhoneChangeOtp ci-dessus,
+  // le backend n'accepte plus `phone` sur cet endpoint.
   Future<Me> updateMe({
     String? firstName,
     String? lastName,
     String? username,
-    String? phone,
     String? primaryLanguageCode,
     String? preferredReceiveLanguageCode,
   }) {
@@ -350,7 +371,6 @@ class ApiClient {
         if (firstName != null) 'firstName': firstName,
         if (lastName != null) 'lastName': lastName,
         if (username != null) 'username': username,
-        if (phone != null) 'phone': phone,
         if (primaryLanguageCode != null) 'primaryLanguageCode': primaryLanguageCode,
         if (preferredReceiveLanguageCode != null)
           'preferredReceiveLanguageCode': preferredReceiveLanguageCode,
@@ -361,10 +381,16 @@ class ApiClient {
 
   // Port de `ProfileSection.tsx` (`api.users.updateProfile`) — seul le champ
   // `statusText` est utilisé côté mobile pour l'instant (voir ProfileScreen).
-  Future<void> updateMyProfile({String? statusText}) {
+  Future<void> updateMyProfile({
+    String? statusText,
+    bool? notificationsEnabled,
+    bool? hideNotificationContent,
+  }) {
     return _guard(
       () => _dio.patch('/users/me/profile', data: {
         if (statusText != null) 'statusText': statusText,
+        if (notificationsEnabled != null) 'notificationsEnabled': notificationsEnabled,
+        if (hideNotificationContent != null) 'hideNotificationContent': hideNotificationContent,
       }),
       (_) {},
     );
@@ -421,12 +447,29 @@ class ApiClient {
     );
   }
 
-  Future<Message> sendMessage(String conversationId, String text, {String? replyToId}) {
+  /// Fenêtre de messages autour de `messageId` — utilisé pour sauter à un
+  /// résultat de recherche ou à un message épinglé (section 20).
+  Future<List<Message>> messagesAround(String conversationId, String messageId) {
+    return _guard(
+      () => _dio.get('/conversations/$conversationId/messages/around/$messageId'),
+      (data) => ((data as Map<String, dynamic>)['items'] as List<dynamic>)
+          .map((e) => Message.fromJson(e as Map<String, dynamic>))
+          .toList(),
+    );
+  }
+
+  Future<Message> sendMessage(
+    String conversationId,
+    String text, {
+    String? replyToId,
+    String? clientId,
+  }) {
     return _guard(
       () => _dio.post('/messages', data: {
         'conversationId': conversationId,
         'text': text,
         if (replyToId != null) 'replyToId': replyToId,
+        if (clientId != null) 'clientId': clientId,
       }),
       (data) => Message.fromJson(data as Map<String, dynamic>),
     );
@@ -443,6 +486,40 @@ class ApiClient {
     return _guard(
       () => _dio.delete('/messages/$messageId/reactions'),
       (data) => Message.fromJson(data as Map<String, dynamic>),
+    );
+  }
+
+  /// "Supprimer pour moi" (section 5B) — jamais réservé à l'auteur,
+  /// contrairement à `deleteMessage` (pour tout le monde) ci-dessous.
+  Future<void> deleteMessageForMe(String messageId) {
+    return _guard(() => _dio.post('/messages/$messageId/delete-for-me'), (_) {});
+  }
+
+  Future<Message> deleteMessage(String messageId) {
+    return _guard(
+      () => _dio.delete('/messages/$messageId'),
+      (data) => Message.fromJson(data as Map<String, dynamic>),
+    );
+  }
+
+  Future<Message> pinMessage(String messageId) {
+    return _guard(
+      () => _dio.post('/messages/$messageId/pin'),
+      (data) => Message.fromJson(data as Map<String, dynamic>),
+    );
+  }
+
+  Future<Message> unpinMessage(String messageId) {
+    return _guard(
+      () => _dio.delete('/messages/$messageId/pin'),
+      (data) => Message.fromJson(data as Map<String, dynamic>),
+    );
+  }
+
+  Future<List<Message>> pinnedMessages(String conversationId) {
+    return _guard(
+      () => _dio.get('/conversations/$conversationId/messages/pinned'),
+      (data) => (data as List<dynamic>).map((e) => Message.fromJson(e as Map<String, dynamic>)).toList(),
     );
   }
 
@@ -503,6 +580,29 @@ class ApiClient {
     );
   }
 
+  /// Pin/archive/mute/marquer non lu/masquer localement (sections 5A, 6-8) —
+  /// `markUnread`/`hidden` sont des actions (jamais un état stocké tel quel,
+  /// voir ConversationsService.updateMembership côté backend).
+  Future<Conversation> updateConversationMembership(
+    String conversationId, {
+    bool? isArchived,
+    bool? isMuted,
+    bool? isPinned,
+    bool? markUnread,
+    bool? hidden,
+  }) {
+    return _guard(
+      () => _dio.patch('/conversations/$conversationId', data: {
+        if (isArchived != null) 'isArchived': isArchived,
+        if (isMuted != null) 'isMuted': isMuted,
+        if (isPinned != null) 'isPinned': isPinned,
+        if (markUnread != null) 'markUnread': markUnread,
+        if (hidden != null) 'hidden': hidden,
+      }),
+      (data) => Conversation.fromJson(data as Map<String, dynamic>),
+    );
+  }
+
   Future<Conversation> createGroup({
     required String title,
     String? description,
@@ -558,6 +658,16 @@ class ApiClient {
   Future<List<PublicUser>> contacts() {
     return _guard(
       () => _dio.get('/contacts'),
+      (data) => (data as List<dynamic>).map((e) => PublicUser.fromJson(e as Map<String, dynamic>)).toList(),
+    );
+  }
+
+  /// Synchronisation des contacts téléphoniques (section 2) — `phoneHashes`
+  /// est déjà calculé localement (voir ContactSyncService), jamais un numéro
+  /// en clair envoyé ici.
+  Future<List<PublicUser>> matchPhones(List<String> phoneHashes) {
+    return _guard(
+      () => _dio.post('/contacts/match-phones', data: {'phoneHashes': phoneHashes}),
       (data) => (data as List<dynamic>).map((e) => PublicUser.fromJson(e as Map<String, dynamic>)).toList(),
     );
   }

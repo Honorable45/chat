@@ -21,7 +21,7 @@ import { memoryStorage } from 'multer';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuthenticatedUser } from '../auth/interfaces/jwt-payload.interface';
-import { MAX_VIDEO_SIZE_BYTES } from '../uploads/media-upload.constants';
+import { MAX_VIDEO_SIZE_BYTES, UPLOAD_FIELD_LIMITS } from '../uploads/media-upload.constants';
 import { CreateStatusDto } from './dto/create-status.dto';
 import { StatusesService } from './statuses.service';
 
@@ -34,12 +34,13 @@ export class StatusesController {
 
   @Post()
   @ApiConsumes('multipart/form-data')
+  @Throttle({ default: { limit: 15, ttl: 60_000 } })
   @UseInterceptors(
     FileInterceptor('media', {
       storage: memoryStorage(),
       // Plus large des trois limites (vidéo) + marge ; chaque type applique
       // sa propre limite précise dans StatusesService.
-      limits: { fileSize: MAX_VIDEO_SIZE_BYTES + 1024 },
+      limits: { fileSize: MAX_VIDEO_SIZE_BYTES + 1024, ...UPLOAD_FIELD_LIMITS, files: 1 },
     }),
   )
   create(

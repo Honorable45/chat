@@ -44,6 +44,7 @@ class MeProfile {
   final String whoCanMessageMe;
   final String whoCanSeeMyStatus;
   final bool notificationsEnabled;
+  final bool hideNotificationContent;
   final bool voiceCloningConsent;
   final bool voiceModelRegistered;
 
@@ -57,6 +58,7 @@ class MeProfile {
     required this.whoCanMessageMe,
     required this.whoCanSeeMyStatus,
     required this.notificationsEnabled,
+    required this.hideNotificationContent,
     required this.voiceCloningConsent,
     required this.voiceModelRegistered,
   });
@@ -71,6 +73,7 @@ class MeProfile {
         whoCanMessageMe: json['whoCanMessageMe'] as String? ?? 'EVERYONE',
         whoCanSeeMyStatus: json['whoCanSeeMyStatus'] as String? ?? 'EVERYONE',
         notificationsEnabled: json['notificationsEnabled'] as bool? ?? true,
+        hideNotificationContent: json['hideNotificationContent'] as bool? ?? false,
         voiceCloningConsent: json['voiceCloningConsent'] as bool? ?? false,
         voiceModelRegistered: json['voiceModelRegistered'] as bool? ?? false,
       );

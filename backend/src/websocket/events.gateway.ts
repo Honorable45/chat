@@ -91,7 +91,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   async handleConnection(client: AppSocket): Promise<void> {
     let userId: string;
     try {
-      userId = await verifySocketUserId(client, this.jwt, this.config);
+      userId = await verifySocketUserId(client, this.jwt, this.config, this.prisma);
       client.data.userId = userId;
       await client.join(this.userRoom(userId));
     } catch (error) {

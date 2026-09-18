@@ -1,5 +1,6 @@
 import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../core/format.dart';
 import '../core/theme.dart';
 import '../models/conversation.dart';
@@ -34,6 +35,10 @@ class MessageBubbleWidget extends StatelessWidget {
   final void Function(String messageId, String languageCode)? onRequestTranslation;
   final void Function(String messageId, String emoji)? onReact;
   final void Function(Message message)? onReply;
+  final void Function(String messageId)? onDeleteForMe;
+  final void Function(String messageId)? onDeleteForEveryone;
+  final void Function(String messageId, bool currentlyPinned)? onTogglePin;
+  final void Function(String messageId)? onRetry;
 
   const MessageBubbleWidget({
     super.key,
@@ -46,6 +51,10 @@ class MessageBubbleWidget extends StatelessWidget {
     this.onRequestTranslation,
     this.onReact,
     this.onReply,
+    this.onDeleteForMe,
+    this.onDeleteForEveryone,
+    this.onTogglePin,
+    this.onRetry,
   });
 
   @override
@@ -140,7 +149,12 @@ class MessageBubbleWidget extends StatelessWidget {
             ),
           ),
         GestureDetector(
-          onLongPress: () => _showActions(context),
+          onLongPress: message.sendStatus == null ? () => _showActions(context) : null,
+          // Un message resté en échec (section 21-22) se retente d'un
+          // simple appui — pas besoin d'un appui long pour ça.
+          onTap: message.sendStatus == SendStatus.failed && onRetry != null
+              ? () => onRetry!(message.id)
+              : null,
           child: Column(
             crossAxisAlignment: own ? CrossAxisAlignment.end : CrossAxisAlignment.start,
             children: [
@@ -282,10 +296,18 @@ class MessageBubbleWidget extends StatelessWidget {
   }
 
   void _showActions(BuildContext context) {
-    if (onReact == null && onReply == null) return;
+    final hasAnyAction = onReact != null ||
+        onReply != null ||
+        onDeleteForMe != null ||
+        onDeleteForEveryone != null ||
+        onTogglePin != null;
+    if (!hasAnyAction) return;
     final c = context.glotta;
     final myReaction =
         myUserId == null ? null : message.reactions.firstWhereOrNull((r) => r.userId == myUserId);
+    final isPinned = message.pinnedAt != null;
+    final canCopy = message.type == MessageType.text && (message.text?.isNotEmpty ?? false);
+
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: c.surfaceRaised,
@@ -327,8 +349,70 @@ class MessageBubbleWidget extends StatelessWidget {
                   },
                 ),
               ],
+              if (canCopy)
+                ListTile(
+                  leading: const Icon(Icons.copy_outlined),
+                  title: const Text('Copier'),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    Clipboard.setData(ClipboardData(text: message.text!));
+                  },
+                ),
+              if (onTogglePin != null && message.type != MessageType.system)
+                ListTile(
+                  leading: Icon(isPinned ? Icons.push_pin : Icons.push_pin_outlined),
+                  title: Text(isPinned ? 'Désépingler' : 'Épingler'),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    onTogglePin!(message.id, isPinned);
+                  },
+                ),
+              if (onDeleteForMe != null || onDeleteForEveryone != null)
+                ListTile(
+                  leading: Icon(Icons.delete_outline, color: c.danger),
+                  title: Text('Supprimer', style: TextStyle(color: c.danger)),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    _showDeleteChoices(context);
+                  },
+                ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  void _showDeleteChoices(BuildContext context) {
+    final c = context.glotta;
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: c.surfaceRaised,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (onDeleteForMe != null)
+              ListTile(
+                title: const Text('Supprimer pour moi'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  onDeleteForMe!(message.id);
+                },
+              ),
+            if (own && onDeleteForEveryone != null)
+              ListTile(
+                title: Text('Supprimer pour tout le monde', style: TextStyle(color: c.danger)),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  onDeleteForEveryone!(message.id);
+                },
+              ),
+            ListTile(
+              title: const Text('Annuler'),
+              onTap: () => Navigator.of(sheetContext).pop(),
+            ),
+          ],
         ),
       ),
     );
@@ -350,17 +434,50 @@ class _Footer extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (message.pinnedAt != null) ...[
+          Icon(Icons.push_pin, size: 11, color: color),
+          const SizedBox(width: 3),
+        ],
         Text(timeOfDay(message.sentAt), style: TextStyle(fontSize: 10.5, color: color)),
         if (own) ...[
           const SizedBox(width: 3),
-          Icon(
-            message.deliveredAt != null || message.readAt != null ? Icons.done_all : Icons.done,
-            size: 13,
-            color: message.readAt != null ? tickColor : color,
-          ),
+          _StatusIcon(status: message.sendStatus, message: message, color: color, tickColor: tickColor),
         ],
       ],
     );
+  }
+}
+
+/// Horloge (en cours d'envoi) / icône d'erreur (échoué, appui pour
+/// réessayer — voir MessageBubbleWidget.onTap) / coches habituelles une fois
+/// confirmé par le serveur (sections 21-22, 30).
+class _StatusIcon extends StatelessWidget {
+  final SendStatus? status;
+  final Message message;
+  final Color color;
+  final Color tickColor;
+
+  const _StatusIcon({
+    required this.status,
+    required this.message,
+    required this.color,
+    required this.tickColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    switch (status) {
+      case SendStatus.sending:
+        return Icon(Icons.access_time, size: 12, color: color);
+      case SendStatus.failed:
+        return Icon(Icons.error_outline, size: 13, color: context.glotta.danger);
+      case null:
+        return Icon(
+          message.deliveredAt != null || message.readAt != null ? Icons.done_all : Icons.done,
+          size: 13,
+          color: message.readAt != null ? tickColor : color,
+        );
+    }
   }
 }
 

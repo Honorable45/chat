@@ -1,16 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
-import '../core/media.dart';
 import '../core/theme.dart';
 import '../models/language.dart';
 import '../models/message.dart';
 import '../services/api_client.dart';
+import '../services/audio_playback_manager.dart';
 
 /// Port de `VoiceMessageBubble.tsx` (tranche essentielle : lecture +
 /// traduction à la demande) — bouton lecture/pause, durée, puis une liste de
 /// puces une par langue déjà traduite/en cours/échouée, plus un bouton pour
 /// en demander une nouvelle. Pas de forme d'onde (décorative uniquement côté
 /// web) ni de transcription affichée en clair pour cette première passe.
+///
+/// Lecture centralisée via `AudioPlaybackManager` (section 2) : jamais son
+/// propre `AudioPlayer` — lancer un vocal ici arrête automatiquement tout
+/// autre vocal en cours de lecture ailleurs dans l'application (même dans
+/// une autre conversation).
 class VoiceMessageBubbleContent extends StatefulWidget {
   final VoiceDetails voice;
   final bool own;
@@ -28,8 +33,7 @@ class VoiceMessageBubbleContent extends StatefulWidget {
 }
 
 class _VoiceMessageBubbleContentState extends State<VoiceMessageBubbleContent> {
-  final _player = AudioPlayer();
-  String? _loadedUrl;
+  final _manager = AudioPlaybackManager.instance;
   bool _playing = false;
   Duration _position = Duration.zero;
   Duration? _duration;
@@ -37,37 +41,37 @@ class _VoiceMessageBubbleContentState extends State<VoiceMessageBubbleContent> {
   @override
   void initState() {
     super.initState();
-    _player.positionStream.listen((p) {
+    // `_playing`/`_position` reflètent le lecteur PARTAGÉ tel quel — filtrés
+    // par URL uniquement au moment de l'affichage (le principal, ou l'une
+    // des puces de traduction), jamais figés sur `voice.audioUrl` ici :
+    // sinon une puce de traduction en cours de lecture ne se distinguerait
+    // jamais d'un vocal à l'arrêt.
+    _manager.player.positionStream.listen((p) {
       if (mounted) setState(() => _position = p);
     });
-    _player.playerStateStream.listen((s) {
+    _manager.player.playerStateStream.listen((s) {
       if (!mounted) return;
-      setState(() => _playing = s.playing && s.processingState != ProcessingState.completed);
-      if (s.processingState == ProcessingState.completed) {
-        _player.seek(Duration.zero);
-        _player.pause();
-      }
+      setState(() {
+        _playing = s.playing && s.processingState != ProcessingState.completed;
+        _duration = _manager.player.duration;
+      });
     });
+    _manager.currentUrl.addListener(_onManagerChanged);
+  }
+
+  void _onManagerChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
-    _player.dispose();
+    _manager.currentUrl.removeListener(_onManagerChanged);
     super.dispose();
   }
 
   Future<void> _toggle(String url) async {
     try {
-      if (_loadedUrl != url) {
-        await _player.setUrl(resolveMediaUrl(url), headers: mediaHeaders(url));
-        _loadedUrl = url;
-        _duration = _player.duration;
-      }
-      if (_playing) {
-        await _player.pause();
-      } else {
-        await _player.play();
-      }
+      await _manager.toggle(url);
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -82,8 +86,8 @@ class _VoiceMessageBubbleContentState extends State<VoiceMessageBubbleContent> {
     final c = context.glotta;
     final textColor = widget.own ? c.accentContrast : c.foreground;
     final voice = widget.voice;
-    final total = _duration ?? Duration(seconds: voice.durationSeconds);
-    final playingThis = _loadedUrl == voice.audioUrl;
+    final playingThis = _manager.currentUrl.value == voice.audioUrl;
+    final total = playingThis ? (_duration ?? Duration(seconds: voice.durationSeconds)) : Duration(seconds: voice.durationSeconds);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -102,7 +106,7 @@ class _VoiceMessageBubbleContentState extends State<VoiceMessageBubbleContent> {
             ),
             const SizedBox(width: 8),
             SizedBox(
-              width: 120,
+              width: 100,
               child: LinearProgressIndicator(
                 value: playingThis && total.inMilliseconds > 0
                     ? (_position.inMilliseconds / total.inMilliseconds).clamp(0, 1)
@@ -116,6 +120,24 @@ class _VoiceMessageBubbleContentState extends State<VoiceMessageBubbleContent> {
             Text(
               _formatDuration(playingThis ? total - _position : total),
               style: TextStyle(color: textColor, fontSize: 11.5),
+            ),
+            const SizedBox(width: 4),
+            // Vitesse de lecture 1x/1.5x/2x (section 2) — un seul lecteur
+            // partagé : change la vitesse de lecture en cours quel que soit
+            // le vocal actuellement joué, pas seulement celui-ci.
+            InkResponse(
+              onTap: () => _manager.cycleSpeed(),
+              child: ValueListenableBuilder<double>(
+                valueListenable: _manager.speed,
+                builder: (context, speed, _) => Text(
+                  '${speed == speed.roundToDouble() ? speed.toInt() : speed}x',
+                  style: TextStyle(
+                    color: textColor.withValues(alpha: 0.85),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
             ),
             const SizedBox(width: 4),
             InkResponse(
@@ -133,7 +155,7 @@ class _VoiceMessageBubbleContentState extends State<VoiceMessageBubbleContent> {
                 .map((t) => _TranslationChip(
                       translation: t,
                       own: widget.own,
-                      playing: _loadedUrl == t.audioUrl && _playing,
+                      playing: _manager.currentUrl.value == t.audioUrl && _playing,
                       onTap: () {
                         if (t.hasAudio) {
                           _toggle(t.audioUrl!);

@@ -40,10 +40,20 @@ export class SmsService {
     if (this.isDevMode()) {
       // Volontairement en clair ICI UNIQUEMENT (mode développement, jamais en
       // production tant que SMS_PROVIDER reste "none") — c'est le seul moyen
-      // de tester le parcours OTP sans clé Zavu réelle.
-      this.logger.warn(
-        `SMS_PROVIDER non configuré — code OTP pour ${this.maskPhone(phone)} (dev uniquement, non envoyé par SMS) : ${code}`,
-      );
+      // de tester le parcours OTP sans clé Zavu réelle. En production, la
+      // validation au démarrage (voir startup-validation.ts) empêche déjà
+      // ce chemin d'être atteint tant que REGISTRATION_OTP_ENABLED="true" ;
+      // cette garde reste une seconde ligne de défense pour ne jamais
+      // journaliser un code OTP en clair en production (audit de sécurité).
+      if (process.env.NODE_ENV !== 'production') {
+        this.logger.warn(
+          `SMS_PROVIDER non configuré — code OTP pour ${this.maskPhone(phone)} (dev uniquement, non envoyé par SMS) : ${code}`,
+        );
+      } else {
+        this.logger.error(
+          `SMS_PROVIDER non configuré en production — code OTP pour ${this.maskPhone(phone)} non envoyé.`,
+        );
+      }
       return;
     }
 

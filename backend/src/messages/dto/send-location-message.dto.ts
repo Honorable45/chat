@@ -8,6 +8,7 @@ import {
   IsOptional,
   IsString,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 
@@ -49,4 +50,10 @@ export class SendLocationMessageDto {
   @IsOptional()
   @IsString()
   replyToId?: string;
+
+  @ApiPropertyOptional({ description: 'Id idempotent généré côté client (UUID)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  clientId?: string;
 }

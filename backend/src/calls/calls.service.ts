@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Call, CallStatus, CallType, Prisma } from '@prisma/client';
+import { isUserInAnyCall } from './call-concurrency.util';
 import { ContactsService } from '../contacts/contacts.service';
 import { GroupCallMessageDto, GroupCallsService } from '../group-calls/group-calls.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -189,27 +190,35 @@ export class CallsService {
       throw new NotFoundException('Conversation introuvable.');
     }
 
-    const busy = await this.prisma.call.findFirst({
-      where: {
-        status: { in: ['RINGING', 'ACTIVE'] },
-        OR: [{ callerId: calleeId }, { calleeId }],
-      },
-    });
-    if (busy) return { busy: true };
+    // Vérifie les DEUX côtés (section 12) — croise Call ET GroupCall (voir
+    // isUserInAnyCall) : un appelant déjà engagé ailleurs n'était auparavant
+    // jamais bloqué, seul l'appelé l'était. La création elle-même reste dans
+    // la même transaction que cette vérification pour fermer la fenêtre de
+    // course entre les deux (deux invitations quasi simultanées vers/depuis
+    // le même utilisateur ne doivent jamais toutes les deux réussir).
+    const message = await this.prisma.$transaction(async (tx) => {
+      const [callerBusy, calleeBusy] = await Promise.all([
+        isUserInAnyCall(tx, callerId),
+        isUserInAnyCall(tx, calleeId),
+      ]);
+      if (callerBusy || calleeBusy) return null;
 
-    const message = await this.prisma.message.create({
-      data: {
-        conversationId,
-        senderId: callerId,
-        type: 'CALL',
-        call: { create: { callerId, calleeId, type, status: 'RINGING' } },
-      },
-      include: { call: { include: CALL_LANGUAGE_INCLUDE } },
+      const created = await tx.message.create({
+        data: {
+          conversationId,
+          senderId: callerId,
+          type: 'CALL',
+          call: { create: { callerId, calleeId, type, status: 'RINGING' } },
+        },
+        include: { call: { include: CALL_LANGUAGE_INCLUDE } },
+      });
+      await tx.conversation.update({
+        where: { id: conversationId },
+        data: { updatedAt: new Date() },
+      });
+      return created;
     });
-    await this.prisma.conversation.update({
-      where: { id: conversationId },
-      data: { updatedAt: new Date() },
-    });
+    if (!message) return { busy: true };
 
     const call = message.call;
     if (!call) {

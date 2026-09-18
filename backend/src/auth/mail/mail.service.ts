@@ -17,9 +17,20 @@ export class MailService {
     const resetUrl = `${origin}/reset-password?token=${rawToken}`;
 
     if (!process.env.MAIL_PROVIDER || process.env.MAIL_PROVIDER === 'none') {
-      this.logger.warn(
-        `MAIL_PROVIDER non configuré — lien de réinitialisation pour ${to} (dev uniquement, non envoyé par email) : ${resetUrl}`,
-      );
+      // Le lien complet (donc le token en clair) n'est journalisé qu'EN
+      // DEHORS de la production — c'est le seul moyen de tester ce
+      // parcours sans fournisseur réel branché (audit de sécurité : jamais
+      // de secret en clair dans les logs de production, même faute de
+      // fournisseur configuré).
+      if (process.env.NODE_ENV !== 'production') {
+        this.logger.warn(
+          `MAIL_PROVIDER non configuré — lien de réinitialisation pour ${to} (dev uniquement, non envoyé par email) : ${resetUrl}`,
+        );
+      } else {
+        this.logger.error(
+          `MAIL_PROVIDER non configuré en production — email de réinitialisation pour ${to} non envoyé.`,
+        );
+      }
       return Promise.resolve();
     }
 
@@ -31,9 +42,16 @@ export class MailService {
   /** Code à 6 chiffres pour l'email de secours 2FA (voir TwoFactorService) — même repli "none" que sendPasswordReset. */
   sendVerificationCode(to: string, code: string): Promise<void> {
     if (!process.env.MAIL_PROVIDER || process.env.MAIL_PROVIDER === 'none') {
-      this.logger.warn(
-        `MAIL_PROVIDER non configuré — code de vérification pour ${to} (dev uniquement, non envoyé par email) : ${code}`,
-      );
+      // Même garde qu'au-dessus : jamais le code en clair en production.
+      if (process.env.NODE_ENV !== 'production') {
+        this.logger.warn(
+          `MAIL_PROVIDER non configuré — code de vérification pour ${to} (dev uniquement, non envoyé par email) : ${code}`,
+        );
+      } else {
+        this.logger.error(
+          `MAIL_PROVIDER non configuré en production — code de vérification pour ${to} non envoyé.`,
+        );
+      }
       return Promise.resolve();
     }
 

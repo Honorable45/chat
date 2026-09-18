@@ -1,37 +1,35 @@
 import type { AuthTokens } from "./types";
 
 /**
- * Persistance des tokens en localStorage. Isolé dans son propre module (plutôt
- * que dans auth-context.tsx) pour que api.ts puisse y accéder sans dépendre
- * de React — le refresh-on-401 doit pouvoir se déclencher depuis un simple
- * appel fetch, pas seulement depuis un composant.
+ * Accès en mémoire uniquement (audit de sécurité — migration hors
+ * localStorage). Le refresh token n'est plus jamais stocké ni lu côté JS :
+ * il vit exclusivement dans le cookie httpOnly `glotta_refresh` posé par le
+ * backend (voir auth-cookies.util.ts côté backend, et refreshSession
+ * ci-dessous dans api.ts), invisible et donc invulnérable à un vol par XSS.
+ *
+ * L'access token, lui, reste nécessairement lisible en JS : plusieurs
+ * fetch de médias authentifiés (voix, avatars, pièces jointes — voir
+ * use-authenticated-blob-url.ts, VoiceMessageBubble.tsx,
+ * StatusVoicePlayer.tsx) l'attachent manuellement en en-tête Authorization,
+ * de même que la poignée de main Socket.IO (voir socket.ts/use-call.ts/
+ * use-group-call.ts) — aucun de ces appels ne peut se reposer sur un cookie
+ * httpOnly, invisible par construction à ce code. Il n'est en revanche
+ * conservé qu'EN MÉMOIRE (jamais sur disque) : contrairement à
+ * localStorage, cette valeur disparaît à la fermeture de l'onglet et n'est
+ * jamais lisible après coup par un script injecté qui s'exécuterait plus
+ * tard. Au rechargement de la page, AuthProvider la reconstitue via
+ * refreshSession() (voir api.ts), qui s'appuie sur le cookie httpOnly.
  */
-
-const ACCESS_KEY = "glotta.accessToken";
-const REFRESH_KEY = "glotta.refreshToken";
-
-function isBrowser(): boolean {
-  return typeof window !== "undefined";
-}
+let accessToken: string | null = null;
 
 export function getAccessToken(): string | null {
-  if (!isBrowser()) return null;
-  return window.localStorage.getItem(ACCESS_KEY);
-}
-
-export function getRefreshToken(): string | null {
-  if (!isBrowser()) return null;
-  return window.localStorage.getItem(REFRESH_KEY);
+  return accessToken;
 }
 
 export function setTokens(tokens: AuthTokens): void {
-  if (!isBrowser()) return;
-  window.localStorage.setItem(ACCESS_KEY, tokens.accessToken);
-  window.localStorage.setItem(REFRESH_KEY, tokens.refreshToken);
+  accessToken = tokens.accessToken;
 }
 
 export function clearTokens(): void {
-  if (!isBrowser()) return;
-  window.localStorage.removeItem(ACCESS_KEY);
-  window.localStorage.removeItem(REFRESH_KEY);
+  accessToken = null;
 }

@@ -54,6 +54,19 @@ class NotificationService {
       onDidReceiveBackgroundNotificationResponse: _onBackgroundNotificationResponse,
     );
 
+    // Démarrage à froid via l'intent plein-écran (section 11) : contrairement
+    // à un tap sur une action de notification, ce lancement ne passe jamais
+    // par onDidReceiveNotificationResponse — sans ce contrôle explicite,
+    // `pendingIncomingCallId` ne serait jamais renseigné et HomeShell
+    // n'ouvrirait jamais l'écran d'appel entrant dans ce cas précis.
+    final launchDetails = await _localNotifications.getNotificationAppLaunchDetails();
+    if (launchDetails?.didNotificationLaunchApp ?? false) {
+      _handleResponse(NotificationResponse(
+        notificationResponseType: NotificationResponseType.selectedNotification,
+        payload: launchDetails!.notificationResponse?.payload,
+      ));
+    }
+
     FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundMessageHandler);
     FirebaseMessaging.onMessage.listen((message) => _showForMessage(message));
     // Enregistré dès `init()` (appelé une seule fois, avant `runApp` — voir
@@ -159,6 +172,12 @@ class NotificationService {
             priority: Priority.max,
             category: AndroidNotificationCategory.call,
             ongoing: true,
+            // Section 11 : ouvre l'app en plein écran par-dessus l'écran de
+            // verrouillage (voir showWhenLocked/turnScreenOn sur MainActivity
+            // dans AndroidManifest.xml) — sans ça, seule une notification
+            // standard s'affiche, jamais l'écran d'appel lui-même tant que le
+            // téléphone est verrouillé.
+            fullScreenIntent: true,
             actions: const [
               AndroidNotificationAction('accept', 'Répondre', showsUserInterface: true),
               AndroidNotificationAction('reject', 'Refuser', cancelNotification: true),

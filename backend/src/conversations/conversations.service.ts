@@ -137,26 +137,41 @@ export class ConversationsService {
   async listMine(userId: string, query: ListConversationsQueryDto = {}) {
     const limit = query.limit ?? DEFAULT_PAGE_SIZE;
 
-    const memberships = await this.prisma.conversationMember.findMany({
+    // Requête depuis ConversationMember (plutôt que Conversation) pour
+    // pouvoir trier par le pin — une préférence personnelle qui vit sur le
+    // lien membre, jamais sur la conversation elle-même (section 7 : deux
+    // membres peuvent épingler la même conversation indépendamment).
+    const membershipRows = await this.prisma.conversationMember.findMany({
       where: { userId, leftAt: null },
-      select: { conversationId: true },
-    });
-    if (memberships.length === 0) return { items: [], nextCursor: null };
-
-    const rows = await this.prisma.conversation.findMany({
-      where: { id: { in: memberships.map((m) => m.conversationId) } },
-      include: CONVERSATION_INCLUDE,
-      orderBy: { updatedAt: 'desc' },
+      include: { conversation: { include: CONVERSATION_INCLUDE } },
+      orderBy: [
+        { isPinned: 'desc' },
+        { pinnedAt: 'desc' },
+        { conversation: { updatedAt: 'desc' } },
+      ],
       take: limit + 1,
-      ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
+      ...(query.cursor
+        ? { cursor: { conversationId_userId: { conversationId: query.cursor, userId } }, skip: 1 }
+        : {}),
     });
+    if (membershipRows.length === 0) return { items: [], nextCursor: null };
 
-    const hasMore = rows.length > limit;
-    const page = hasMore ? rows.slice(0, limit) : rows;
-    const nextCursor = hasMore ? (page[page.length - 1]?.id ?? null) : null;
+    const hasMore = membershipRows.length > limit;
+    const page = hasMore ? membershipRows.slice(0, limit) : membershipRows;
+    const nextCursor = hasMore ? (page[page.length - 1]?.conversationId ?? null) : null;
+
+    // Suppression locale (section 5A) : une conversation masquée disparaît
+    // tant qu'aucun message n'est arrivé depuis — filtré ici plutôt qu'en
+    // SQL (Prisma ne compare pas deux colonnes entre elles nativement).
+    // Comme le compteur de non-lus (voir toDetail), un compromis MVP assumé :
+    // une page peut occasionnellement contenir moins de `limit` éléments
+    // visibles si une conversation masquée s'y trouvait.
+    const visible = page.filter(
+      (m) => !(m.hiddenAt && m.conversation.updatedAt.getTime() <= m.hiddenAt.getTime()),
+    );
 
     return {
-      items: await Promise.all(page.map((conversation) => this.toDetail(conversation, userId))),
+      items: await Promise.all(visible.map((m) => this.toDetail(m.conversation, userId))),
       nextCursor,
     };
   }
@@ -183,10 +198,26 @@ export class ConversationsService {
 
     await this.prisma.conversationMember.update({
       where: { id: membership.id },
-      data: dto,
+      data: {
+        isArchived: dto.isArchived,
+        isMuted: dto.isMuted,
+        ...(dto.isPinned !== undefined
+          ? { isPinned: dto.isPinned, pinnedAt: dto.isPinned ? new Date() : null }
+          : {}),
+        // Actions plutôt qu'un état stocké tel quel — voir le DTO.
+        ...(dto.markUnread ? { lastReadAt: null } : {}),
+        ...(dto.hidden ? { hiddenAt: new Date() } : {}),
+      },
     });
 
-    return this.findById(userId, conversationId);
+    const detail = await this.findById(userId, conversationId);
+    // Synchronisation multi-appareils (section 1) : une préférence purement
+    // personnelle (jamais partagée avec les autres membres) — émis
+    // uniquement vers les autres appareils de CET utilisateur, jamais vers
+    // le reste de la conversation. `updateMembership` ne diffusait rien du
+    // tout auparavant, c'était le trou à combler.
+    this.events.emitToUser(userId, 'conversation:membership-updated', detail);
+    return detail;
   }
 
   /** "whoCanMessageMe" (section 22/28) — jamais consulté pour une conversation déjà existante, voir createDirect. */
@@ -284,6 +315,7 @@ export class ConversationsService {
       myMembership: {
         isArchived: myMembership.isArchived,
         isMuted: myMembership.isMuted,
+        isPinned: myMembership.isPinned,
         lastReadAt: myMembership.lastReadAt,
         role: myMembership.role,
       },

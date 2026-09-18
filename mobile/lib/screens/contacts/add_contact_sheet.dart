@@ -3,13 +3,16 @@ import 'package:flutter/material.dart';
 import '../../core/theme.dart';
 import '../../models/public_user.dart';
 import '../../services/api_client.dart';
+import '../../services/contact_sync_service.dart';
 import '../../widgets/avatar.dart';
 
 /// Recherche + envoi de demande de contact — ouvert via le bouton flottant
 /// de ContactsScreen (voir HomeShell), jamais affiché en ligne dans la
 /// liste : même contenu qu'avant, juste déplacé dans une feuille modale
 /// pour un bouton d'ajout flottant façon WhatsApp plutôt qu'une barre de
-/// recherche toujours visible.
+/// recherche toujours visible. Ajoute la synchronisation des contacts
+/// téléphoniques (section 2) comme second moyen de retrouver quelqu'un,
+/// explicitement opt-in — voir ContactSyncService.
 class AddContactSheet extends StatefulWidget {
   final VoidCallback onRequestSent;
 
@@ -25,6 +28,20 @@ class _AddContactSheetState extends State<AddContactSheet> {
   bool _searching = false;
   final Set<String> _busyIds = {};
   Timer? _debounce;
+
+  bool _syncEnabled = false;
+  bool _syncing = false;
+  List<PublicUser> _syncMatches = [];
+
+  @override
+  void initState() {
+    super.initState();
+    ContactSyncService.instance.isEnabled.then((enabled) {
+      if (!mounted) return;
+      setState(() => _syncEnabled = enabled);
+      if (enabled) _runSync();
+    });
+  }
 
   @override
   void dispose() {
@@ -52,6 +69,43 @@ class _AddContactSheetState extends State<AddContactSheet> {
     });
   }
 
+  Future<void> _toggleSync(bool value) async {
+    if (!value) {
+      await ContactSyncService.instance.setEnabled(false);
+      setState(() {
+        _syncEnabled = false;
+        _syncMatches = [];
+      });
+      return;
+    }
+    final granted = await ContactSyncService.instance.requestPermission();
+    if (!granted) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Accès aux contacts refusé.')),
+        );
+      }
+      return;
+    }
+    await ContactSyncService.instance.setEnabled(true);
+    if (!mounted) return;
+    setState(() => _syncEnabled = true);
+    await _runSync();
+  }
+
+  Future<void> _runSync() async {
+    setState(() => _syncing = true);
+    try {
+      final matches = await ContactSyncService.instance.sync();
+      if (mounted) setState(() => _syncMatches = matches);
+    } catch (_) {
+      // Best-effort — une synchro manquée n'empêche jamais la recherche par
+      // username, qui reste disponible indépendamment.
+    } finally {
+      if (mounted) setState(() => _syncing = false);
+    }
+  }
+
   Future<void> _sendRequest(PublicUser user) async {
     setState(() => _busyIds.add(user.id));
     try {
@@ -71,6 +125,8 @@ class _AddContactSheetState extends State<AddContactSheet> {
   @override
   Widget build(BuildContext context) {
     final c = context.glotta;
+    final searching = _query.text.trim().length >= 2;
+
     return SafeArea(
       child: SizedBox(
         height: MediaQuery.of(context).size.height * 0.75,
@@ -92,7 +148,10 @@ class _AddContactSheetState extends State<AddContactSheet> {
               child: TextField(
                 controller: _query,
                 autofocus: true,
-                onChanged: _onQueryChanged,
+                onChanged: (v) {
+                  _onQueryChanged(v);
+                  setState(() {}); // Recalcule `searching` pour basculer la liste affichée.
+                },
                 decoration: const InputDecoration(
                   hintText: "Chercher un nom d'utilisateur...",
                   prefixIcon: Icon(Icons.search, size: 20),
@@ -100,37 +159,73 @@ class _AddContactSheetState extends State<AddContactSheet> {
               ),
             ),
             if (_searching) const Padding(padding: EdgeInsets.only(top: 8), child: LinearProgressIndicator(minHeight: 2)),
-            const SizedBox(height: 8),
+            SwitchListTile(
+              dense: true,
+              title: const Text('Synchroniser mes contacts'),
+              subtitle: Text(
+                'Retrouvez vos contacts déjà inscrits — seules des empreintes de numéros quittent votre appareil.',
+                style: TextStyle(color: c.muted, fontSize: 12),
+              ),
+              value: _syncEnabled,
+              activeThumbColor: c.accent2,
+              onChanged: _toggleSync,
+            ),
+            const SizedBox(height: 4),
             Expanded(
-              child: _results.isEmpty
-                  ? Center(
-                      child: Text(
-                        _query.text.trim().length < 2 ? 'Tapez au moins 2 caractères.' : 'Aucun résultat.',
-                        style: TextStyle(color: c.muted),
-                      ),
-                    )
-                  : ListView.builder(
-                      itemCount: _results.length,
-                      itemBuilder: (context, index) {
-                        final u = _results[index];
-                        final busy = _busyIds.contains(u.id);
-                        return ListTile(
-                          leading: GlottaAvatar(firstName: u.firstName, lastName: u.lastName, avatarUrl: u.avatarUrl, size: 40),
-                          title: Text(u.displayName),
-                          subtitle: Text('@${u.username}', style: TextStyle(color: c.muted)),
-                          trailing: busy
-                              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                              : IconButton(
-                                  icon: Icon(Icons.person_add_alt_1, color: c.accent),
-                                  onPressed: () => _sendRequest(u),
-                                ),
-                        );
-                      },
-                    ),
+              child: searching
+                  ? _buildList(c, _results, emptyLabel: 'Aucun résultat.')
+                  : _syncing
+                      ? const Center(child: CircularProgressIndicator())
+                      : _syncEnabled
+                          ? _buildList(
+                              c,
+                              _syncMatches,
+                              emptyLabel: 'Aucun de vos contacts n’utilise Glotta pour le moment.',
+                              header: 'Depuis vos contacts',
+                            )
+                          : Center(
+                              child: Text('Tapez au moins 2 caractères.', style: TextStyle(color: c.muted)),
+                            ),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildList(GlottaColors c, List<PublicUser> users, {required String emptyLabel, String? header}) {
+    if (users.isEmpty) {
+      return Center(child: Text(emptyLabel, style: TextStyle(color: c.muted)));
+    }
+    return ListView.builder(
+      itemCount: users.length + (header != null ? 1 : 0),
+      itemBuilder: (context, index) {
+        if (header != null) {
+          if (index == 0) {
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Text(
+                header.toUpperCase(),
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: c.muted, letterSpacing: 0.4),
+              ),
+            );
+          }
+          index -= 1;
+        }
+        final u = users[index];
+        final busy = _busyIds.contains(u.id);
+        return ListTile(
+          leading: GlottaAvatar(firstName: u.firstName, lastName: u.lastName, avatarUrl: u.avatarUrl, size: 40),
+          title: Text(u.displayName),
+          subtitle: Text('@${u.username}', style: TextStyle(color: c.muted)),
+          trailing: busy
+              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+              : IconButton(
+                  icon: Icon(Icons.person_add_alt_1, color: c.accent),
+                  onPressed: () => _sendRequest(u),
+                ),
+        );
+      },
     );
   }
 }

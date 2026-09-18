@@ -165,6 +165,10 @@ export function toMessageDto(message: MessageWithReads, cloudinary: CloudinaryPr
       : null,
     editedAt: message.editedAt,
     deletedAt: message.deletedAt,
+    // Épinglage dans la conversation (section 20) — distinct du pin de
+    // conversation, jamais présent dans ce DTO.
+    pinnedAt: message.pinnedAt,
+    pinnedById: message.pinnedById,
     sentAt: message.sentAt,
     deliveredAt: message.deliveredAt,
     // Conversations DIRECT uniquement (MVP) : au plus un autre membre peut
@@ -279,6 +283,9 @@ export class MessagesService {
   async send(userId: string, dto: CreateMessageDto): Promise<MessageDto> {
     await this.assertMembership(userId, dto.conversationId);
 
+    const existing = await this.findExistingByClientId(userId, dto.clientId);
+    if (existing) return existing;
+
     if (dto.replyToId) {
       const replyTarget = await this.prisma.message.findUnique({ where: { id: dto.replyToId } });
       if (!replyTarget || replyTarget.conversationId !== dto.conversationId) {
@@ -304,6 +311,7 @@ export class MessagesService {
           type: 'TEXT',
           text: dto.text,
           replyToId: dto.replyToId,
+          clientId: dto.clientId,
           deliveredAt,
         },
         include: MESSAGE_INCLUDE,
@@ -390,6 +398,9 @@ export class MessagesService {
 
     await this.assertMembership(userId, dto.conversationId);
 
+    const existingImage = await this.findExistingByClientId(userId, dto.clientId);
+    if (existingImage) return existingImage;
+
     if (dto.replyToId) {
       const replyTarget = await this.prisma.message.findUnique({ where: { id: dto.replyToId } });
       if (!replyTarget || replyTarget.conversationId !== dto.conversationId) {
@@ -416,6 +427,7 @@ export class MessagesService {
           type: 'IMAGE',
           text: dto.text,
           replyToId: dto.replyToId,
+          clientId: dto.clientId,
           deliveredAt,
           attachments: {
             create: {
@@ -794,6 +806,9 @@ export class MessagesService {
   async sendSticker(userId: string, dto: SendStickerMessageDto): Promise<MessageDto> {
     await this.assertMembership(userId, dto.conversationId);
 
+    const existingSticker = await this.findExistingByClientId(userId, dto.clientId);
+    if (existingSticker) return existingSticker;
+
     if (dto.replyToId) {
       const replyTarget = await this.prisma.message.findUnique({ where: { id: dto.replyToId } });
       if (!replyTarget || replyTarget.conversationId !== dto.conversationId) {
@@ -814,6 +829,7 @@ export class MessagesService {
           type: 'STICKER',
           text: dto.emoji,
           replyToId: dto.replyToId,
+          clientId: dto.clientId,
           deliveredAt,
         },
         include: MESSAGE_INCLUDE,
@@ -876,7 +892,10 @@ export class MessagesService {
 
     const limit = query.limit ?? DEFAULT_PAGE_SIZE;
     const rows = await this.prisma.message.findMany({
-      where: { conversationId },
+      // "Supprimer pour moi" (section 5B) : exclu entièrement pour cet
+      // utilisateur (jamais un tombstone comme deletedAt/"supprimé pour
+      // tout le monde", qui reste visible par les autres membres).
+      where: { conversationId, deletions: { none: { userId } } },
       include: MESSAGE_INCLUDE,
       orderBy: { createdAt: 'desc' },
       take: limit + 1,
@@ -953,6 +972,7 @@ export class MessagesService {
       where: {
         conversationId,
         deletedAt: null,
+        deletions: { none: { userId } },
         text: { contains: q, mode: 'insensitive' },
       },
       include: MESSAGE_INCLUDE,
@@ -995,13 +1015,21 @@ export class MessagesService {
 
     const [olderAndSelf, newer] = await Promise.all([
       this.prisma.message.findMany({
-        where: { conversationId, createdAt: { lte: target.createdAt } },
+        where: {
+          conversationId,
+          createdAt: { lte: target.createdAt },
+          deletions: { none: { userId } },
+        },
         include: MESSAGE_INCLUDE,
         orderBy: { createdAt: 'desc' },
         take: limit + 1,
       }),
       this.prisma.message.findMany({
-        where: { conversationId, createdAt: { gt: target.createdAt } },
+        where: {
+          conversationId,
+          createdAt: { gt: target.createdAt },
+          deletions: { none: { userId } },
+        },
         include: MESSAGE_INCLUDE,
         orderBy: { createdAt: 'asc' },
         take: limit,
@@ -1063,6 +1091,77 @@ export class MessagesService {
     });
 
     return toMessageDto(updated, this.cloudinary);
+  }
+
+  /**
+   * "Supprimer pour moi" (section 5B) — n'importe quel membre, pas seulement
+   * l'auteur (contrairement à `remove()`, "pour tout le monde"). Une simple
+   * ligne `MessageDeletion` : le message reste entier pour les autres
+   * membres, seul `list()`/`search()`/`listAroundMessage()` l'excluent pour
+   * cet utilisateur (voir leur clause `deletions: { none: { userId } } }`).
+   */
+  async deleteForMe(userId: string, messageId: string): Promise<void> {
+    const message = await this.prisma.message.findUnique({ where: { id: messageId } });
+    if (!message) {
+      throw new NotFoundException('Message introuvable.');
+    }
+    await this.assertMembership(userId, message.conversationId);
+
+    await this.prisma.messageDeletion.upsert({
+      where: { messageId_userId: { messageId, userId } },
+      create: { messageId, userId },
+      update: {},
+    });
+  }
+
+  /**
+   * Épingler un message DANS la conversation (section 20) — distinct du pin
+   * de conversation (ConversationMember.isPinned) : visible par tous les
+   * membres, pas une préférence personnelle. N'importe quel membre peut
+   * épingler/désépingler, comme WhatsApp (pas réservé aux admins de groupe).
+   */
+  async pin(userId: string, messageId: string): Promise<MessageDto> {
+    const message = await this.prisma.message.findUnique({ where: { id: messageId } });
+    if (!message) {
+      throw new NotFoundException('Message introuvable.');
+    }
+    await this.assertMembership(userId, message.conversationId);
+
+    const updated = await this.prisma.message.update({
+      where: { id: messageId },
+      data: { pinnedAt: new Date(), pinnedById: userId },
+      include: MESSAGE_INCLUDE,
+    });
+    const recipients = await this.otherMemberIds(message.conversationId, userId);
+    this.events.emitToUsers(recipients, 'message:updated', toMessageDto(updated, this.cloudinary));
+    return toMessageDto(updated, this.cloudinary);
+  }
+
+  async unpin(userId: string, messageId: string): Promise<MessageDto> {
+    const message = await this.prisma.message.findUnique({ where: { id: messageId } });
+    if (!message) {
+      throw new NotFoundException('Message introuvable.');
+    }
+    await this.assertMembership(userId, message.conversationId);
+
+    const updated = await this.prisma.message.update({
+      where: { id: messageId },
+      data: { pinnedAt: null, pinnedById: null },
+      include: MESSAGE_INCLUDE,
+    });
+    const recipients = await this.otherMemberIds(message.conversationId, userId);
+    this.events.emitToUsers(recipients, 'message:updated', toMessageDto(updated, this.cloudinary));
+    return toMessageDto(updated, this.cloudinary);
+  }
+
+  async listPinned(userId: string, conversationId: string): Promise<MessageDto[]> {
+    await this.assertMembership(userId, conversationId);
+    const rows = await this.prisma.message.findMany({
+      where: { conversationId, pinnedAt: { not: null } },
+      include: MESSAGE_INCLUDE,
+      orderBy: { pinnedAt: 'desc' },
+    });
+    return rows.map((m) => toMessageDto(m, this.cloudinary));
   }
 
   /**
@@ -1270,6 +1369,26 @@ export class MessagesService {
     if (!membership || membership.leftAt) {
       throw new NotFoundException('Conversation introuvable.');
     }
+  }
+
+  /**
+   * Anti-doublon (section 30) : un renvoi après un échec réseau ambigu
+   * (le client ne sait pas si le premier envoi a atteint le serveur) réutilise
+   * le même `clientId` — si un message existe déjà avec cet id pour cet
+   * expéditeur, on le renvoie tel quel au lieu d'en créer un second. Jamais
+   * appelé pour un `clientId` absent (messages plus anciens/système).
+   */
+  private async findExistingByClientId(
+    senderId: string,
+    clientId: string | undefined,
+  ): Promise<MessageDto | null> {
+    if (!clientId) return null;
+    const existing = await this.prisma.message.findUnique({
+      where: { clientId },
+      include: MESSAGE_INCLUDE,
+    });
+    if (!existing || existing.senderId !== senderId) return null;
+    return toMessageDto(existing, this.cloudinary);
   }
 
   private async otherMemberIds(conversationId: string, excludeUserId: string): Promise<string[]> {

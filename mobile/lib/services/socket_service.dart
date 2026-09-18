@@ -19,16 +19,28 @@ class SocketService {
   final _updatedMessageController = StreamController<Message>.broadcast();
   final _deletedMessageController = StreamController<Map<String, dynamic>>.broadcast();
   final _typingController = StreamController<Map<String, String>>.broadcast();
+  final _stopTypingController = StreamController<Map<String, String>>.broadcast();
   final _readController = StreamController<Map<String, dynamic>>.broadcast();
   final _connectionController = StreamController<bool>.broadcast();
   final _translationController = StreamController<Map<String, dynamic>>.broadcast();
+  final _membershipUpdatedController = StreamController<Map<String, dynamic>>.broadcast();
 
   Stream<Message> get onNewMessage => _newMessageController.stream;
   Stream<Message> get onMessageUpdated => _updatedMessageController.stream;
   Stream<Map<String, dynamic>> get onMessageDeleted => _deletedMessageController.stream;
   Stream<Map<String, String>> get onTyping => _typingController.stream;
+  // Jamais écouté avant l'ajout du verrouillage global d'app (voir le
+  // rapport d'exploration) : "en train d'écrire..." ne disparaissait jamais
+  // côté réception, faute d'écouteur pour cet événement pourtant déjà
+  // relayé par le backend (voir EventsGateway.relayToOtherMembers).
+  Stream<Map<String, String>> get onStopTyping => _stopTypingController.stream;
   Stream<Map<String, dynamic>> get onRead => _readController.stream;
   Stream<bool> get onConnectionChange => _connectionController.stream;
+  /// Pin/archive/mute/masquage d'une conversation modifié depuis un AUTRE
+  /// appareil du même compte (voir ConversationsService.updateMembership,
+  /// jamais émis aux autres membres — uniquement aux autres appareils de
+  /// CET utilisateur).
+  Stream<Map<String, dynamic>> get onMembershipUpdated => _membershipUpdatedController.stream;
   /// `{event: "started"|"completed"|"failed", ...payload}` — voir
   /// TranslationStagePayload côté backend (aucun `message:updated` pour la
   /// progression d'une traduction vocale, seulement ces trois événements).
@@ -74,7 +86,15 @@ class SocketService {
         'userId': map['userId'] as String,
       });
     });
+    socket.on('message:stop_typing', (data) {
+      final map = _asMap(data);
+      _stopTypingController.add({
+        'conversationId': map['conversationId'] as String,
+        'userId': map['userId'] as String,
+      });
+    });
     socket.on('message:read', (data) => _readController.add(_asMap(data)));
+    socket.on('conversation:membership-updated', (data) => _membershipUpdatedController.add(_asMap(data)));
 
     for (final stage in ['started', 'completed', 'failed']) {
       socket.on('translation:$stage', (data) {

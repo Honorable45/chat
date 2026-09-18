@@ -21,6 +21,7 @@ function buildUser(overrides: Partial<User> = {}): User {
     phone: null,
     passwordHash: 'hashed-password',
     phoneVerifiedAt: null,
+    phoneHash: null,
     twoFactorEnabled: false,
     twoFactorPinHash: null,
     recoveryEmail: null,
@@ -156,6 +157,10 @@ describe('AuthService', () => {
 
   afterEach(() => {
     jest.clearAllMocks();
+    // Bascule REGISTRATION_OTP_ENABLED (voir isRegistrationOtpEnabled) —
+    // jamais fuiter d'un test à l'autre : chaque test la fixe explicitement
+    // s'il en a besoin, sinon la valeur par défaut (absente = désactivée) s'applique.
+    delete process.env.REGISTRATION_OTP_ENABLED;
   });
 
   describe('register', () => {
@@ -226,8 +231,42 @@ describe('AuthService', () => {
       );
     });
 
-    it('crée directement le compte d’inscription sans bloquer sur la validation du numéro', async () => {
-      otp.verify.mockRejectedValue(new Error('OTP invalide'));
+    it('refuse de créer le compte quand le code OTP est invalide, une fois REGISTRATION_OTP_ENABLED=true (jamais de bypass silencieux)', async () => {
+      process.env.REGISTRATION_OTP_ENABLED = 'true';
+      otp.verify.mockRejectedValue(new UnauthorizedException('Code invalide ou expiré.'));
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.verifyRegisterOtp(
+          {
+            phone: '+22890000000',
+            code: '123456',
+          },
+          { userAgent: 'jest', ipAddress: '127.0.0.1' },
+        ),
+      ).rejects.toThrow(UnauthorizedException);
+
+      expect(prisma.user.create).not.toHaveBeenCalled();
+    });
+
+    it('refuse sans même appeler OtpService si aucun code n’est fourni alors que REGISTRATION_OTP_ENABLED=true', async () => {
+      process.env.REGISTRATION_OTP_ENABLED = 'true';
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.verifyRegisterOtp(
+          { phone: '+22890000000' },
+          { userAgent: 'jest', ipAddress: '127.0.0.1' },
+        ),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+
+      expect(otp.verify).not.toHaveBeenCalled();
+      expect(prisma.user.create).not.toHaveBeenCalled();
+    });
+
+    it('crée le compte avec le numéro vérifié une fois le code OTP valide (REGISTRATION_OTP_ENABLED=true)', async () => {
+      process.env.REGISTRATION_OTP_ENABLED = 'true';
+      otp.verify.mockResolvedValue({ id: 'otp-1' });
       prisma.user.findUnique.mockResolvedValue(null);
       languages.findEnabledByCode.mockResolvedValue(buildLanguage());
       prisma.user.create.mockResolvedValue(buildUser({ phone: '+22890000000' }));
@@ -242,9 +281,44 @@ describe('AuthService', () => {
           },
           { userAgent: 'jest', ipAddress: '127.0.0.1' },
         ),
-      ).resolves.toEqual(expect.objectContaining({ user: expect.objectContaining({ phone: '+22890000000' }) }));
+      ).resolves.toEqual(
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        expect.objectContaining({ user: expect.objectContaining({ phone: '+22890000000' }) }),
+      );
 
-      expect(prisma.user.create).toHaveBeenCalledTimes(1);
+      expect(prisma.user.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          data: expect.objectContaining({ phoneVerifiedAt: expect.any(Date) }),
+        }),
+      );
+      expect(otp.consume).toHaveBeenCalledWith('otp-1');
+    });
+
+    it('crée le compte SANS jamais appeler OtpService quand REGISTRATION_OTP_ENABLED est absent/false (bascule désactivée par défaut)', async () => {
+      delete process.env.REGISTRATION_OTP_ENABLED;
+      prisma.user.findUnique.mockResolvedValue(null);
+      languages.findEnabledByCode.mockResolvedValue(buildLanguage());
+      prisma.user.create.mockResolvedValue(buildUser({ phone: '+22890000000' }));
+      prisma.userSession.create.mockResolvedValue(buildSession());
+      prisma.userSession.update.mockResolvedValue(buildSession());
+
+      const result = await service.verifyRegisterOtp(
+        { phone: '+22890000000' },
+        { userAgent: 'jest', ipAddress: '127.0.0.1' },
+      );
+
+      expect(otp.verify).not.toHaveBeenCalled();
+      expect(otp.consume).not.toHaveBeenCalled();
+      expect(result.user.phone).toBe('+22890000000');
+      expect(prisma.user.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // Numéro considéré vérifié tel quel pendant la désactivation
+          // temporaire (demande explicite) — jamais `null`.
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          data: expect.objectContaining({ phoneVerifiedAt: expect.any(Date) }),
+        }),
+      );
     });
 
     it("se contente de nom d'utilisateur/email/mot de passe : replie firstName sur le username, lastName sur '', langue sur 'fr'", async () => {
@@ -269,6 +343,65 @@ describe('AuthService', () => {
     });
   });
 
+  describe('requestOtp — bascule REGISTRATION_OTP_ENABLED (numéro pas encore inscrit)', () => {
+    it("n'envoie aucun SMS d'inscription par défaut (bascule absente/désactivée), mais renvoie quand même purpose=REGISTER", async () => {
+      delete process.env.REGISTRATION_OTP_ENABLED;
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      const result = await service.requestOtp('+22890000000', '127.0.0.1');
+
+      expect(result).toEqual({ purpose: 'REGISTER' });
+      expect(otp.request).not.toHaveBeenCalled();
+    });
+
+    it('envoie bien le SMS une fois REGISTRATION_OTP_ENABLED=true', async () => {
+      process.env.REGISTRATION_OTP_ENABLED = 'true';
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await service.requestOtp('+22890000000', '127.0.0.1');
+
+      expect(otp.request).toHaveBeenCalledWith('+22890000000', 'REGISTER', '127.0.0.1');
+    });
+
+    it('la connexion garde toujours son OTP normal, quelle que soit la bascule (numéro déjà inscrit)', async () => {
+      delete process.env.REGISTRATION_OTP_ENABLED;
+      prisma.user.findUnique.mockResolvedValue(buildUser({ isActive: true }));
+
+      await service.requestOtp('+22890000000', '127.0.0.1');
+
+      expect(otp.request).toHaveBeenCalledWith('+22890000000', 'LOGIN', '127.0.0.1');
+    });
+  });
+
+  describe('requestRegisterOtp', () => {
+    it("n'envoie aucun SMS par défaut (bascule absente/désactivée)", async () => {
+      delete process.env.REGISTRATION_OTP_ENABLED;
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await service.requestRegisterOtp('+22890000000', '127.0.0.1');
+
+      expect(otp.request).not.toHaveBeenCalled();
+    });
+
+    it('envoie le SMS une fois REGISTRATION_OTP_ENABLED=true', async () => {
+      process.env.REGISTRATION_OTP_ENABLED = 'true';
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await service.requestRegisterOtp('+22890000000', '127.0.0.1');
+
+      expect(otp.request).toHaveBeenCalledWith('+22890000000', 'REGISTER', '127.0.0.1');
+    });
+
+    it('refuse toujours si le numéro est déjà utilisé, avant même de regarder la bascule', async () => {
+      prisma.user.findUnique.mockResolvedValue(buildUser());
+
+      await expect(service.requestRegisterOtp('+22890000000', '127.0.0.1')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(otp.request).not.toHaveBeenCalled();
+    });
+  });
+
   describe('refresh', () => {
     // Convention de ce bloc : mockedBcrypt.compare(token, hash) renvoie vrai
     // seulement si hash === `hash-of-${token}` — permet de simuler avec
@@ -287,7 +420,7 @@ describe('AuthService', () => {
       const session = buildSession({ refreshTokenHash: 'hash-of-current-token' });
       prisma.userSession.findUnique.mockResolvedValue(session);
       prisma.user.findUnique.mockResolvedValue(buildUser());
-      prisma.userSession.update.mockResolvedValue(session);
+      prisma.userSession.updateMany.mockResolvedValue({ count: 1 });
 
       const result = await service.refresh('current-token');
 
@@ -296,6 +429,14 @@ describe('AuthService', () => {
         expect.objectContaining({
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
           data: expect.objectContaining({ revokedAt: expect.any(Date) }),
+        }),
+      );
+      // La rotation passe désormais par un verrou optimiste (`updateMany` +
+      // condition sur le hash lu à l'instant du fetch), jamais un `update`
+      // inconditionnel — voir rotateRefreshTokenAtomic (audit de sécurité).
+      expect(prisma.userSession.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: session.id, refreshTokenHash: 'hash-of-current-token' },
         }),
       );
     });
@@ -314,7 +455,7 @@ describe('AuthService', () => {
         });
         prisma.userSession.findUnique.mockResolvedValue(session);
         prisma.user.findUnique.mockResolvedValue(buildUser());
-        prisma.userSession.update.mockResolvedValue(session);
+        prisma.userSession.updateMany.mockResolvedValue({ count: 1 });
 
         const result = await service.refresh('old-token');
 
@@ -325,6 +466,36 @@ describe('AuthService', () => {
             data: expect.objectContaining({ revokedAt: expect.any(Date) }),
           }),
         );
+      },
+    );
+
+    it(
+      'rejette exactement un appel sur deux quand deux requêtes concurrentes présentent le ' +
+        'même refresh token valide (verrou optimiste) — sans jamais révoquer la session du gagnant',
+      async () => {
+        const session = buildSession({ refreshTokenHash: 'hash-of-current-token' });
+        prisma.userSession.findUnique.mockResolvedValue(session);
+        prisma.user.findUnique.mockResolvedValue(buildUser());
+        // Simule l'ordre d'arrivée des écritures : la première requête à
+        // atteindre la base gagne (count: 1), la seconde arrive après que
+        // le hash a déjà changé (count: 0).
+        prisma.userSession.updateMany
+          .mockResolvedValueOnce({ count: 1 })
+          .mockResolvedValueOnce({ count: 0 });
+
+        const [winner, loser] = await Promise.allSettled([
+          service.refresh('current-token'),
+          service.refresh('current-token'),
+        ]);
+
+        expect(winner.status).toBe('fulfilled');
+        expect(loser.status).toBe('rejected');
+        if (loser.status === 'rejected') {
+          expect(loser.reason).toBeInstanceOf(UnauthorizedException);
+        }
+        // Le perdant est simplement rejeté — jamais de révocation de la
+        // session du gagnant (voir rotateRefreshTokenAtomic).
+        expect(prisma.userSession.update).not.toHaveBeenCalled();
       },
     );
 
@@ -349,7 +520,7 @@ describe('AuthService', () => {
       const session = buildSession({
         refreshTokenHash: 'hash-of-new-token',
         previousRefreshTokenHash: 'hash-of-old-token',
-        lastUsedAt: new Date(Date.now() - 61_000), // > REFRESH_GRACE_PERIOD_MS (60s)
+        lastUsedAt: new Date(Date.now() - 6_000), // > REFRESH_GRACE_PERIOD_MS (5s, audit de sécurité)
       });
       prisma.userSession.findUnique.mockResolvedValue(session);
 
@@ -443,6 +614,59 @@ describe('AuthService', () => {
         'Session introuvable.',
       );
       expect(prisma.userSession.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('requestPhoneChange', () => {
+    it('refuse si le nouveau numéro appartient déjà à un autre compte', async () => {
+      prisma.user.findUnique.mockResolvedValue(buildUser({ id: 'autre-user' }));
+
+      await expect(
+        service.requestPhoneChange('user-1', '+22891234567', '127.0.0.1'),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(otp.request).not.toHaveBeenCalled();
+    });
+
+    it("envoie l'OTP au NOUVEAU numéro quand il est libre", async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+
+      await service.requestPhoneChange('user-1', '+22891234567', '127.0.0.1');
+
+      expect(otp.request).toHaveBeenCalledWith('+22891234567', 'CHANGE_PHONE', '127.0.0.1');
+    });
+  });
+
+  describe('verifyPhoneChange', () => {
+    it('refuse de créer le changement quand le code OTP est invalide', async () => {
+      otp.verify.mockRejectedValue(new UnauthorizedException('Code invalide ou expiré.'));
+
+      await expect(
+        service.verifyPhoneChange('user-1', '+22891234567', '123456'),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('met à jour phone/phoneHash/phoneVerifiedAt une fois le code vérifié', async () => {
+      otp.verify.mockResolvedValue({ id: 'otp-1' });
+      prisma.user.findUnique.mockResolvedValue(null);
+      prisma.user.update.mockResolvedValue(buildUser({ phone: '+22891234567' }));
+
+      const result = await service.verifyPhoneChange('user-1', '+22891234567', '123456');
+
+      /* eslint-disable @typescript-eslint/no-unsafe-assignment -- expect.objectContaining
+         imbriqué est typé `any` par @types/jest, sans danger dans une simple assertion. */
+      expect(prisma.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'user-1' },
+          data: expect.objectContaining({
+            phone: '+22891234567',
+            phoneVerifiedAt: expect.any(Date),
+          }),
+        }),
+      );
+      /* eslint-enable @typescript-eslint/no-unsafe-assignment */
+      expect(otp.consume).toHaveBeenCalledWith('otp-1');
+      expect(result.phone).toBe('+22891234567');
     });
   });
 });

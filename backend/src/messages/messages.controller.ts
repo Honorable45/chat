@@ -28,6 +28,7 @@ import {
   MAX_IMAGE_SIZE_BYTES,
   MAX_MEDIA_ALBUM_ITEMS,
   MAX_VIDEO_SIZE_BYTES,
+  UPLOAD_FIELD_LIMITS,
 } from '../uploads/media-upload.constants';
 import { AddReactionDto } from './dto/add-reaction.dto';
 import { CreateMessageDto } from './dto/create-message.dto';
@@ -59,13 +60,14 @@ export class MessagesController {
 
   @Post('messages/image')
   @ApiConsumes('multipart/form-data')
+  @Throttle({ default: { limit: 15, ttl: 60_000 } })
   @UseInterceptors(
     FileInterceptor('image', {
       storage: memoryStorage(),
       // Marge au-dessus de la limite métier (MAX_IMAGE_SIZE_BYTES) : Multer
       // rejette ici avec une erreur générique côté transport, MessagesService
       // avec un message explicite — le service reste la source de vérité.
-      limits: { fileSize: MAX_IMAGE_SIZE_BYTES + 1024 },
+      limits: { fileSize: MAX_IMAGE_SIZE_BYTES + 1024, ...UPLOAD_FIELD_LIMITS, files: 1 },
     }),
   )
   sendImage(
@@ -78,6 +80,7 @@ export class MessagesController {
 
   @Post('messages/media')
   @ApiConsumes('multipart/form-data')
+  @Throttle({ default: { limit: 15, ttl: 60_000 } })
   @UseInterceptors(
     FilesInterceptor('media', MAX_MEDIA_ALBUM_ITEMS, {
       storage: memoryStorage(),
@@ -85,7 +88,11 @@ export class MessagesController {
       // rejette ici avec une erreur générique côté transport, MessagesService
       // avec un message explicite par fichier — le service reste la source
       // de vérité (même principe que POST /messages/image).
-      limits: { fileSize: MAX_VIDEO_SIZE_BYTES + 1024 },
+      limits: {
+        fileSize: MAX_VIDEO_SIZE_BYTES + 1024,
+        ...UPLOAD_FIELD_LIMITS,
+        files: MAX_MEDIA_ALBUM_ITEMS,
+      },
     }),
   )
   sendMedia(
@@ -190,6 +197,15 @@ export class MessagesController {
     return this.messages.listAroundMessage(user.userId, conversationId, messageId);
   }
 
+  /** "Messages épinglés" (section 20) — distinct du pin de conversation. */
+  @Get('conversations/:conversationId/messages/pinned')
+  listPinned(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('conversationId') conversationId: string,
+  ) {
+    return this.messages.listPinned(user.userId, conversationId);
+  }
+
   @Post('conversations/:conversationId/read')
   @HttpCode(HttpStatus.OK)
   markRead(
@@ -211,6 +227,23 @@ export class MessagesController {
   @Delete('messages/:id')
   remove(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
     return this.messages.remove(user.userId, id);
+  }
+
+  /** "Supprimer pour moi" (section 5B) — jamais réservé à l'auteur, contrairement à `remove()` ci-dessus. */
+  @Post('messages/:id/delete-for-me')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  deleteForMe(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string): Promise<void> {
+    return this.messages.deleteForMe(user.userId, id);
+  }
+
+  @Post('messages/:id/pin')
+  pin(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.messages.pin(user.userId, id);
+  }
+
+  @Delete('messages/:id/pin')
+  unpin(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.messages.unpin(user.userId, id);
   }
 
   @Throttle({ default: { limit: 60, ttl: 60_000 } })

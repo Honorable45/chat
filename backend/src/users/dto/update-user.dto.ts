@@ -42,11 +42,10 @@ export class UpdateUserDto {
   @IsEmail()
   email?: string;
 
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  @Matches(/^\+?[0-9]{7,15}$/, { message: 'Numéro de téléphone invalide.' })
-  phone?: string;
+  // Pas de champ `phone` ici (section 4 du cahier des charges) : un
+  // changement de numéro doit obligatoirement passer par une nouvelle
+  // vérification OTP — voir POST auth/phone/request-change puis
+  // auth/phone/verify-change, jamais ce endpoint générique.
 
   @ApiPropertyOptional({ example: 'fr' })
   @IsOptional()

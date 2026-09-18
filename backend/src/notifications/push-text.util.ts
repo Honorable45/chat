@@ -23,7 +23,26 @@ function str(value: unknown): string | null {
  * a posteriori. Absent pour les types sans acteur identifiable
  * (TRANSLATION_COMPLETED, ADDED_TO_GROUP...) : titre générique dans ce cas.
  */
-export function buildPushText(type: NotificationType, payload: Record<string, unknown>): PushText {
+// Types dont le texte pousserait autrement un aperçu du contenu échangé
+// (message texte ou vocal) — les autres (appel, contact, réaction...) ne
+// révèlent déjà qu'une action, jamais un contenu, donc restent inchangés
+// même quand hideContent est actif.
+const CONTENT_BEARING_TYPES = new Set<NotificationType>(['NEW_MESSAGE', 'NEW_VOICE_MESSAGE']);
+
+export function buildPushText(
+  type: NotificationType,
+  payload: Record<string, unknown>,
+  // Section 9 : "prévoir une option permettant de choisir si le contenu des
+  // notifications doit être masqué" — réglage de préférence (Profile du
+  // destinataire), indépendant de tout verrouillage local de l'app (jamais
+  // connu du backend, voir section 10). Ne touche que le texte poussé ;
+  // Notification.payload stocké en base reste toujours complet (lu par le
+  // panneau in-app une fois l'app ouverte).
+  hideContent = false,
+): PushText {
+  if (hideContent && CONTENT_BEARING_TYPES.has(type)) {
+    return { title: 'Glotta', body: 'Nouveau message' };
+  }
   const title = str(payload.actorName) ?? 'Glotta';
   switch (type) {
     case 'NEW_MESSAGE':

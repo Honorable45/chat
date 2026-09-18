@@ -24,6 +24,7 @@ function buildProfile(overrides: Partial<Profile> = {}): Profile {
     whoCanMessageMe: 'EVERYONE',
     whoCanSeeMyStatus: 'EVERYONE',
     notificationsEnabled: true,
+    hideNotificationContent: false,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,

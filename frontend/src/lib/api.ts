@@ -1,5 +1,5 @@
 import { detectBrowserName, detectOperatingSystem } from "./device-info";
-import { clearTokens, getAccessToken, getRefreshToken, setTokens } from "./token-store";
+import { clearTokens, getAccessToken, setTokens } from "./token-store";
 import type {
   ApiErrorBody,
   AppNotification,
@@ -129,13 +129,16 @@ let refreshInFlight: Promise<boolean> | null = null;
 export async function refreshSession(): Promise<boolean> {
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
-      const refreshToken = getRefreshToken();
-      if (!refreshToken) return false;
       try {
+        // Aucun corps envoyé : le refresh token n'est plus jamais détenu par
+        // ce code JS, seulement par le cookie httpOnly `glotta_refresh`
+        // (voir token-store.ts) — `credentials: "include"` est ce qui le
+        // fait parvenir au backend.
         const res = await fetch(`${API_URL}/auth/refresh`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ refreshToken }),
+          credentials: "include",
+          body: JSON.stringify({}),
         });
         if (!res.ok) return false;
         const data = (await res.json()) as AuthResponse;
@@ -178,6 +181,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const res = await fetch(`${API_URL}${path}`, {
     method,
     headers,
+    // Envoie aussi le cookie httpOnly glotta_access (défense en profondeur,
+    // audit de sécurité) — l'en-tête Authorization ci-dessus reste la
+    // source primaire côté frontend (lu depuis la mémoire, voir
+    // token-store.ts), le backend accepte les deux indifféremment.
+    credentials: "include",
     body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
   });
 
@@ -247,6 +255,10 @@ export interface UpdateProfileInput {
   whoCanMessageMe?: WhoCanInteract;
   whoCanSeeMyStatus?: WhoCanInteract;
   notificationsEnabled?: boolean;
+  // Section 9 : masque l'aperçu du message dans les notifications système
+  // ("Glotta — Nouveau message" au lieu de "Jean : Salut...") — voir
+  // push-text.util.ts côté backend, n'affecte jamais le panneau in-app.
+  hideNotificationContent?: boolean;
   voiceCloningConsent?: boolean;
 }
 
@@ -265,6 +277,12 @@ export const api = {
     // Public (section 6) : la page qui affiche le QR n'a par définition
     // aucune session — la confirmation elle-même se fait côté mobile
     // (voir DeviceLinkController), jamais depuis ce navigateur.
+    // Convertit les tokens reçus via la liaison QR (voir loginWithTokens
+    // dans auth-context.tsx) en cookies httpOnly — appelé juste après que
+    // l'access token a été posé en mémoire (voir token-store.ts), donc déjà
+    // présent dans l'en-tête Authorization de cette requête elle-même.
+    adoptTokens: (refreshToken: string) =>
+      request<void>("/auth/web/adopt-tokens", { method: "POST", body: { refreshToken } }),
     createLinkRequest: () =>
       request<WebLinkRequestCreated>("/auth/web/create-link-request", {
         method: "POST",

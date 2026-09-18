@@ -38,6 +38,7 @@ export interface MeProfile {
   whoCanMessageMe: string;
   whoCanSeeMyStatus: string;
   notificationsEnabled: boolean;
+  hideNotificationContent: boolean;
   voiceCloningConsent: boolean;
   voiceModelRegistered: boolean;
 }
@@ -413,6 +414,7 @@ export interface ProfileRecord {
   whoCanMessageMe: WhoCanInteract;
   whoCanSeeMyStatus: WhoCanInteract;
   notificationsEnabled: boolean;
+  hideNotificationContent: boolean;
   createdAt: string;
   updatedAt: string;
 }

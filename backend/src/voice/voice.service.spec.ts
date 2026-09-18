@@ -49,6 +49,9 @@ function buildMembership(overrides: Partial<ConversationMember> = {}): Conversat
     lastReadAt: null,
     isArchived: false,
     isMuted: false,
+    isPinned: false,
+    pinnedAt: null,
+    hiddenAt: null,
     leftAt: null,
     ...overrides,
   };

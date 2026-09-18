@@ -24,6 +24,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuthenticatedUser } from '../auth/interfaces/jwt-payload.interface';
 import { OverrideVoiceLanguageDto } from '../translations/dto/override-voice-language.dto';
 import { MAX_AUDIO_SIZE_BYTES } from '../uploads/audio-upload.constants';
+import { UPLOAD_FIELD_LIMITS } from '../uploads/media-upload.constants';
 import { CreateVoiceMessageDto } from './dto/create-voice-message.dto';
 import { RequestVoiceTranslationDto } from './dto/request-voice-translation.dto';
 import { VoiceService } from './voice.service';
@@ -37,13 +38,14 @@ export class VoiceController {
 
   @Post('messages')
   @ApiConsumes('multipart/form-data')
+  @Throttle({ default: { limit: 15, ttl: 60_000 } })
   @UseInterceptors(
     FileInterceptor('audio', {
       storage: memoryStorage(),
       // Marge au-dessus de la limite métier (MAX_AUDIO_SIZE_BYTES) : Multer
       // rejette ici avec une erreur générique côté transport, VoiceService
       // avec un message explicite — le service reste la source de vérité.
-      limits: { fileSize: MAX_AUDIO_SIZE_BYTES + 1024 },
+      limits: { fileSize: MAX_AUDIO_SIZE_BYTES + 1024, ...UPLOAD_FIELD_LIMITS, files: 1 },
     }),
   )
   send(

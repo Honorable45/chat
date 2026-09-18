@@ -86,11 +86,25 @@ export class DeviceLinkService {
   ): Promise<void> {
     const request = await this.findPendingByToken(token);
 
+    // Transition atomique AVANT tout effet de bord (audit de sécurité) :
+    // `findPendingByToken` ci-dessus peut renvoyer la même demande PENDING
+    // à deux appels `confirm()` concurrents (ex. double-tap, deux onglets
+    // mobile) — sans ce verrou optimiste, les deux passeraient le contrôle
+    // initial et créeraient chacun une session Web pour le même QR. Cet
+    // `updateMany` ne réussit QUE si le statut est encore PENDING au moment
+    // exact de l'écriture ; seul l'appel dont `count === 1` continue.
+    const claim = await this.prisma.webLinkRequest.updateMany({
+      where: { id: request.id, status: 'PENDING' },
+      data:
+        decision === 'cancel'
+          ? { status: 'CANCELLED' }
+          : { status: 'CONFIRMED', userId, confirmedAt: new Date() },
+    });
+    if (claim.count !== 1) {
+      throw new NotFoundException('Demande de liaison introuvable ou expirée.');
+    }
+
     if (decision === 'cancel') {
-      await this.prisma.webLinkRequest.update({
-        where: { id: request.id },
-        data: { status: 'CANCELLED' },
-      });
       this.gateway.emitCancelled(request.id);
       return;
     }
@@ -101,10 +115,6 @@ export class DeviceLinkService {
       { ...context, deviceLabel: deviceLabel ?? request.browserName ?? undefined },
       SessionType.WEB,
     );
-    await this.prisma.webLinkRequest.update({
-      where: { id: request.id },
-      data: { status: 'CONFIRMED', userId, confirmedAt: new Date() },
-    });
     // Jamais de token permanent dans le QR (section 9) : les tokens ne
     // transitent qu'ici, par ce WebSocket, directement vers le navigateur
     // qui a créé la demande — jamais via l'API REST elle-même.

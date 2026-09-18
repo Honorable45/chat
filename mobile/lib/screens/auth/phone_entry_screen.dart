@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl_phone_field/intl_phone_field.dart';
+import '../../core/config.dart';
 import '../../core/theme.dart';
 import '../../models/auth_flow.dart';
 import '../../services/api_client.dart';
@@ -19,18 +21,15 @@ class PhoneEntryScreen extends ConsumerStatefulWidget {
 }
 
 class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
-  final _phone = TextEditingController();
+  // Renseigné par IntlPhoneField.onChanged — toujours déjà normalisé au
+  // format international E.164 (indicatif + numéro), jamais reconstruit à
+  // la main : voir PhoneNumber.completeNumber.
+  String _phone = '';
   String? _error;
   bool _submitting = false;
 
-  @override
-  void dispose() {
-    _phone.dispose();
-    super.dispose();
-  }
-
   Future<void> _submit() async {
-    final phone = _phone.text.trim();
+    final phone = _phone.trim();
     if (phone.isEmpty) return;
     setState(() {
       _error = null;
@@ -40,7 +39,14 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
       final purpose = await ref.read(authProvider.notifier).requestOtp(phone);
       if (!mounted) return;
 
-      if (purpose == OtpPurpose.register) {
+      // Bascule temporaire (voir AppConfig.registrationOtpEnabled) : pour
+      // une inscription, le backend n'a de toute façon envoyé aucun SMS
+      // tant qu'elle est désactivée (voir AuthService.isRegistrationOtpEnabled)
+      // — passer par OtpVerifyScreen demanderait un code qui n'existe pas.
+      // Le numéro est considéré vérifié tel quel ; `code` est ignoré
+      // côté serveur dans ce cas (voir VerifyRegisterOtpDto). La connexion
+      // (purpose == login) garde toujours son écran de code normal.
+      if (purpose == OtpPurpose.register && !AppConfig.registrationOtpEnabled) {
         await ref.read(authProvider.notifier).verifyRegisterOtp(phone: phone, code: '000000');
         return;
       }
@@ -73,12 +79,12 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
         children: [
           AuthFormField(
             label: 'Numéro de téléphone',
-            child: TextField(
-              controller: _phone,
-              keyboardType: TextInputType.phone,
-              autofillHints: const [AutofillHints.telephoneNumber],
+            child: IntlPhoneField(
+              initialCountryCode: 'TG',
+              disableLengthCheck: true,
               textInputAction: TextInputAction.done,
-              decoration: const InputDecoration(hintText: '+228 90 00 00 00'),
+              decoration: const InputDecoration(hintText: '90 00 00 00'),
+              onChanged: (value) => _phone = value.completeNumber,
               onSubmitted: (_) => _submit(),
             ),
           ),

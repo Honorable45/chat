@@ -171,5 +171,167 @@ describe('Auth (e2e)', () => {
         .send({ refreshToken: user.refreshToken })
         .expect(401);
     });
+
+    it("invalide aussi immédiatement l'access token déjà émis (et pas seulement au prochain refresh)", async () => {
+      const user = await registerTestUser(app);
+
+      await request(app.getHttpServer())
+        .post('/api/auth/logout')
+        .set('Authorization', `Bearer ${user.accessToken}`)
+        .expect(204);
+
+      await request(app.getHttpServer())
+        .get('/api/users/me')
+        .set('Authorization', `Bearer ${user.accessToken}`)
+        .expect(401);
+    });
+  });
+
+  describe('DELETE /api/auth/sessions/:id', () => {
+    it("révoque immédiatement l'access token de la session ciblée, pas seulement le refresh token", async () => {
+      const username = `auth_e2e_sessions_${Date.now()}`;
+      const password = 'un-mot-de-passe-solide';
+      const owner = await registerTestUser(app, { username, password });
+
+      // Deuxième "appareil" : connexion séparée pour le même compte, avec
+      // sa propre session à révoquer depuis la première.
+      const loginRes = await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .send({ identifier: username, password })
+        .expect(200);
+      const otherAccessToken = loginRes.body.accessToken as string;
+
+      const sessionsRes = await request(app.getHttpServer())
+        .get('/api/auth/sessions')
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .expect(200);
+      const otherSession = (sessionsRes.body as Array<{ id: string; isCurrent: boolean }>).find(
+        (s) => !s.isCurrent,
+      );
+      expect(otherSession).toBeDefined();
+
+      await request(app.getHttpServer())
+        .delete(`/api/auth/sessions/${otherSession!.id}`)
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .expect(204);
+
+      await request(app.getHttpServer())
+        .get('/api/users/me')
+        .set('Authorization', `Bearer ${otherAccessToken}`)
+        .expect(401);
+    });
+  });
+
+  describe('PATCH /api/auth/change-password', () => {
+    it('révoque les autres sessions : leur access token devient inutilisable', async () => {
+      const username = `auth_e2e_changepwd_${Date.now()}`;
+      const password = 'un-mot-de-passe-solide';
+      const owner = await registerTestUser(app, { username, password });
+
+      const loginRes = await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .send({ identifier: username, password })
+        .expect(200);
+      const otherAccessToken = loginRes.body.accessToken as string;
+
+      await request(app.getHttpServer())
+        .patch('/api/auth/change-password')
+        .set('Authorization', `Bearer ${owner.accessToken}`)
+        .send({ currentPassword: password, newPassword: 'un-nouveau-mot-de-passe-solide' })
+        .expect(204);
+
+      await request(app.getHttpServer())
+        .get('/api/users/me')
+        .set('Authorization', `Bearer ${otherAccessToken}`)
+        .expect(401);
+    });
+  });
+
+  describe('Cookies httpOnly (audit de sécurité, migration hors localStorage)', () => {
+    function extractCookie(res: request.Response, name: string): string | undefined {
+      const raw = res.headers['set-cookie'] as unknown as string[] | undefined;
+      return raw?.find((c) => c.startsWith(`${name}=`));
+    }
+
+    it('pose glotta_access et glotta_refresh (httpOnly) à la connexion', async () => {
+      const username = `auth_e2e_cookies_${Date.now()}`;
+      const password = 'un-mot-de-passe-solide';
+      await registerTestUser(app, { username, password });
+
+      const res = await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .send({ identifier: username, password })
+        .expect(200);
+
+      const access = extractCookie(res, 'glotta_access');
+      const refresh = extractCookie(res, 'glotta_refresh');
+      expect(access).toBeDefined();
+      expect(access).toContain('HttpOnly');
+      expect(refresh).toBeDefined();
+      expect(refresh).toContain('HttpOnly');
+      expect(refresh).toContain('Path=/api/auth/refresh');
+    });
+
+    it('authentifie une requête via le cookie glotta_access, sans en-tête Authorization', async () => {
+      const user = await registerTestUser(app, { username: `auth_e2e_cookie_auth_${Date.now()}` });
+
+      const res = await request(app.getHttpServer())
+        .get('/api/users/me')
+        .set('Cookie', `glotta_access=${user.accessToken}`)
+        .expect(200);
+
+      expect(res.body.id).toBe(user.id);
+    });
+
+    it('accepte un refresh via le cookie glotta_refresh seul (sans corps)', async () => {
+      const user = await registerTestUser(app, {
+        username: `auth_e2e_cookie_refresh_${Date.now()}`,
+      });
+
+      const res = await request(app.getHttpServer())
+        .post('/api/auth/refresh')
+        .set('Cookie', `glotta_refresh=${user.refreshToken}`)
+        .send({})
+        .expect(200);
+
+      expect(typeof res.body.accessToken).toBe('string');
+    });
+
+    it('efface les cookies à la déconnexion', async () => {
+      const user = await registerTestUser(app, {
+        username: `auth_e2e_cookie_logout_${Date.now()}`,
+      });
+
+      const res = await request(app.getHttpServer())
+        .post('/api/auth/logout')
+        .set('Authorization', `Bearer ${user.accessToken}`)
+        .expect(204);
+
+      const access = extractCookie(res, 'glotta_access');
+      expect(access).toContain('Expires=Thu, 01 Jan 1970');
+    });
+  });
+
+  describe('POST /api/auth/web/adopt-tokens', () => {
+    it("pose les cookies à partir d'un access token valide (liaison QR Web)", async () => {
+      const user = await registerTestUser(app, { username: `auth_e2e_adopt_${Date.now()}` });
+
+      const res = await request(app.getHttpServer())
+        .post('/api/auth/web/adopt-tokens')
+        .set('Authorization', `Bearer ${user.accessToken}`)
+        .send({ refreshToken: user.refreshToken })
+        .expect(204);
+
+      const raw = res.headers['set-cookie'] as unknown as string[] | undefined;
+      expect(raw?.some((c) => c.startsWith('glotta_access='))).toBe(true);
+      expect(raw?.some((c) => c.startsWith('glotta_refresh='))).toBe(true);
+    });
+
+    it('refuse sans access token valide', async () => {
+      await request(app.getHttpServer())
+        .post('/api/auth/web/adopt-tokens')
+        .send({ refreshToken: 'peu-importe' })
+        .expect(401);
+    });
   });
 });

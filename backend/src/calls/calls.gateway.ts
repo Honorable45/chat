@@ -16,6 +16,7 @@ import { GroupCallsGateway } from '../group-calls/group-calls.gateway';
 import { GroupCallMessageDto } from '../group-calls/group-calls.service';
 import { SocketRateLimiter } from '../websocket/socket-rate-limiter';
 import { verifySocketUserId } from '../websocket/socket-auth.util';
+import { PrismaService } from '../prisma/prisma.service';
 import { CallTranslationService } from './call-translation.service';
 import { CallMessageDto, CallsService } from './calls.service';
 
@@ -113,11 +114,12 @@ export class CallsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly calls: CallsService,
     private readonly callTranslation: CallTranslationService,
     private readonly groupCallsGateway: GroupCallsGateway,
+    private readonly prisma: PrismaService,
   ) {}
 
   async handleConnection(client: AppSocket): Promise<void> {
     try {
-      const userId = await verifySocketUserId(client, this.jwt, this.config);
+      const userId = await verifySocketUserId(client, this.jwt, this.config, this.prisma);
       client.data.userId = userId;
       await client.join(this.userRoom(userId));
     } catch (error) {

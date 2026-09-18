@@ -34,6 +34,14 @@ model User {
   // Posé par AuthService.verifyRegisterOtp / verifyLoginOtp après un code
   // correct — jamais par un endpoint qui ne vérifie pas réellement le SMS.
   phoneVerifiedAt DateTime?
+  // Hash SHA-256 non salé de `phone` normalisé (voir phone-hash.util.ts),
+  // recalculé partout où `phone` change — permet à ContactsService.matchPhones
+  // de retrouver des utilisateurs à partir de hashs calculés côté client
+  // (carnet d'adresses) sans jamais transmettre de numéro en clair dans un
+  // sens ou dans l'autre. Volontairement un hash simple (pas de PSI complet) :
+  // suffisant pour ce périmètre, limite documentée dans le rapport de la
+  // fonctionnalité "synchronisation des contacts".
+  phoneHash       String?   @unique
 
   // Vérification en deux étapes (PIN, section "Sécurité") — jamais activée
   // par défaut, jamais de PIN en clair (voir TwoFactorService).
@@ -62,6 +70,7 @@ model User {
   conversationMemberships ConversationMember[]
   sentMessages            Message[]              @relation("MessageSender")
   messageReads            MessageRead[]
+  messageDeletions        MessageDeletion[]
   reactions               Reaction[]
   notifications           Notification[]
   statuses                Status[]
@@ -209,6 +218,12 @@ enum OtpPurpose {
   // Étape 1 de la récupération de PIN 2FA (section 4) : reconfirmer la
   // possession du numéro avant de faire confiance à l'email de secours.
   RECOVERY_PHONE
+  // Changement de numéro depuis un compte déjà authentifié (section 4 du
+  // cahier des charges : "un changement de numéro doit obligatoirement
+  // passer par une nouvelle vérification OTP") — voir
+  // AuthService.requestPhoneChange/verifyPhoneChange, jamais via
+  // UsersService.updateMe.
+  CHANGE_PHONE
 }
 
 // Code à 6 chiffres envoyé par email — même mécanique que OtpRequest côté
@@ -316,6 +331,13 @@ model Profile {
   // appels, traductions — section 32) pourra affiner ceci plus tard sans
   // remettre en cause ce champ.
   notificationsEnabled Boolean @default(true)
+
+  // Masque l'aperçu du message dans les notifications système (section 9 :
+  // "Glotta — Nouveau message" au lieu de "Jean : Salut...") — n'affecte que
+  // le texte poussé (voir push-text.util.ts), jamais la notification in-app
+  // (Notification.payload reste complet, lu uniquement une fois l'app
+  // déverrouillée/ouverte).
+  hideNotificationContent Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -437,6 +459,18 @@ model ConversationMember {
   lastReadAt DateTime?
   isArchived Boolean   @default(false)
   isMuted    Boolean   @default(false)
+  // Épinglage de conversation (section 7) — préférence purement personnelle,
+  // jamais partagée avec les autres membres. `pinnedAt` sert d'ordre de tri
+  // (les plus récemment épinglées d'abord), `isPinned` évite de comparer
+  // `pinnedAt` à `null` partout où seul le statut compte.
+  isPinned   Boolean   @default(false)
+  pinnedAt   DateTime?
+  // Suppression locale de la conversation (section 5A) — disparaît de
+  // listMine() tant qu'aucun nouveau message n'est arrivé depuis
+  // (comparé à Conversation.updatedAt) ; jamais une vraie destruction de
+  // données, cohérent avec le reste de l'app qui ne supprime jamais rien
+  // physiquement quand ça casserait la synchronisation multi-appareils.
+  hiddenAt   DateTime?
   leftAt     DateTime?
 
   @@unique([conversationId, userId])
@@ -519,15 +553,47 @@ model Message {
   editedAt  DateTime?
   deletedAt DateTime?
 
+  // Id généré côté client (UUID) — jamais réutilisé pour deux envois
+  // distincts, permet à MessagesService.send() de reconnaître un renvoi
+  // après un échec réseau ambigu (section 30 : "anti-doublon") et de renvoyer
+  // le message déjà créé au lieu d'en créer un second. Nullable : les
+  // messages système/anciens n'en ont pas.
+  clientId String? @unique
+
+  // Épinglage DANS la conversation (section 20) — distinct du pin de
+  // conversation ci-dessus (ConversationMember.isPinned) : ceci met en avant
+  // un message précis pour tous les membres, pas une préférence personnelle.
+  pinnedAt   DateTime?
+  pinnedById String?
+
   sentAt      DateTime  @default(now())
   deliveredAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  deletions MessageDeletion[]
+
   @@index([conversationId, createdAt])
   @@index([senderId])
   @@map("messages")
+}
+
+// "Supprimer pour moi" (section 5B) — distinct de Message.deletedAt (qui
+// représente "supprimé pour tout le monde", posé par MessagesService.remove,
+// propriétaire uniquement). Même motif que MessageRead : une ligne par
+// (message, utilisateur) qui a choisi de la masquer chez lui seulement,
+// jamais une donnée partagée.
+model MessageDeletion {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deletedAt DateTime @default(now())
+
+  @@unique([messageId, userId])
+  @@map("message_deletions")
 }
 
 enum MessageType {

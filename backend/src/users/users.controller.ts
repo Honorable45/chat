@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { memoryStorage } from 'multer';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -23,7 +24,7 @@ import { UpdateProfileDto } from '../profiles/dto/update-profile.dto';
 import { ProfilesService } from '../profiles/profiles.service';
 import { VoiceIdentityService } from '../translations/voice-identity/voice-identity.service';
 import { MAX_AUDIO_SIZE_BYTES } from '../uploads/audio-upload.constants';
-import { MAX_IMAGE_SIZE_BYTES } from '../uploads/media-upload.constants';
+import { MAX_IMAGE_SIZE_BYTES, UPLOAD_FIELD_LIMITS } from '../uploads/media-upload.constants';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UsersService } from './users.service';
 
@@ -57,10 +58,11 @@ export class UsersController {
 
   @Post('me/avatar')
   @ApiConsumes('multipart/form-data')
+  @Throttle({ default: { limit: 15, ttl: 60_000 } })
   @UseInterceptors(
     FileInterceptor('avatar', {
       storage: memoryStorage(),
-      limits: { fileSize: MAX_IMAGE_SIZE_BYTES + 1024 },
+      limits: { fileSize: MAX_IMAGE_SIZE_BYTES + 1024, ...UPLOAD_FIELD_LIMITS, files: 1 },
     }),
   )
   setAvatar(
@@ -78,10 +80,11 @@ export class UsersController {
 
   @Post('me/voice-model')
   @ApiConsumes('multipart/form-data')
+  @Throttle({ default: { limit: 15, ttl: 60_000 } })
   @UseInterceptors(
     FileInterceptor('sample', {
       storage: memoryStorage(),
-      limits: { fileSize: MAX_AUDIO_SIZE_BYTES + 1024 },
+      limits: { fileSize: MAX_AUDIO_SIZE_BYTES + 1024, ...UPLOAD_FIELD_LIMITS, files: 1 },
     }),
   )
   enrollVoiceModel(

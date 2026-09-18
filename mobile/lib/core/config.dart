@@ -16,4 +16,17 @@ class AppConfig {
     'WS_BASE_URL',
     defaultValue: 'http://10.0.2.2:4000',
   );
+
+  /// Bascule temporaire (même nom exact côté backend, voir
+  /// AuthService.isRegistrationOtpEnabled) — désactivée par défaut : voir
+  /// PhoneEntryScreen._submit, qui saute l'écran de saisie du code pour une
+  /// inscription tant que ceci vaut `false`. Repasser à `true` ICI (ou via
+  /// `--dart-define=REGISTRATION_OTP_ENABLED=true` au build) ET dans
+  /// backend/.env pour réactiver — aucune autre modification de code
+  /// nécessaire, OtpVerifyScreen reste intact et continue de servir la
+  /// connexion (jamais affectée par cette bascule) quoi qu'il arrive ici.
+  static const bool registrationOtpEnabled = bool.fromEnvironment(
+    'REGISTRATION_OTP_ENABLED',
+    defaultValue: false,
+  );
 }

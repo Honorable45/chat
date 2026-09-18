@@ -14,13 +14,24 @@ class AuthState {
   final AuthStatus status;
   final Me? me;
   final String? error;
+  // Vrai juste après une inscription réussie (verifyRegisterOtp), jusqu'à ce
+  // que ProfileSetupScreen appelle completeProfileSetup() — pilote la
+  // redirection vers /profile-setup dans router.dart. Ne reflète aucun état
+  // serveur (juste-inscrit n'est pas persisté côté backend, un compte auto-
+  // généré est déjà pleinement utilisable) : purement une étape d'onboarding
+  // côté client, jamais reconstituée après un redémarrage à froid.
+  final bool needsProfileSetup;
 
-  const AuthState({required this.status, this.me, this.error});
+  const AuthState({required this.status, this.me, this.error, this.needsProfileSetup = false});
 
   const AuthState.unknown() : this(status: AuthStatus.unknown);
 
-  AuthState copyWith({AuthStatus? status, Me? me, String? error}) =>
-      AuthState(status: status ?? this.status, me: me ?? this.me, error: error);
+  AuthState copyWith({AuthStatus? status, Me? me, String? error, bool? needsProfileSetup}) => AuthState(
+        status: status ?? this.status,
+        me: me ?? this.me,
+        error: error,
+        needsProfileSetup: needsProfileSetup ?? this.needsProfileSetup,
+      );
 }
 
 /// Équivalent de `frontend/src/lib/auth-context.tsx` : source de vérité
@@ -139,6 +150,16 @@ class AuthNotifier extends Notifier<AuthState> {
       deviceLabel: deviceLabel,
     );
     await _applyAuthResponse(auth);
+    // Après _applyAuthResponse (qui repart d'un AuthState neuf via _loadMe) —
+    // seul le parcours d'inscription doit déclencher /profile-setup, jamais
+    // une connexion ou le bootstrap au démarrage.
+    state = state.copyWith(needsProfileSetup: true);
+  }
+
+  /// Appelé par ProfileSetupScreen une fois l'assistant terminé (ou passé) —
+  /// laisse le routeur revenir à /conversations.
+  void completeProfileSetup() {
+    state = state.copyWith(needsProfileSetup: false);
   }
 
   /// Ne connecte PAS l'utilisateur si la 2FA est active — voir

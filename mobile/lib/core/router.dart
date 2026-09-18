@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../screens/auth/phone_entry_screen.dart';
+import '../screens/auth/profile_setup_screen.dart';
 import '../screens/chat/chat_screen.dart';
 import '../screens/home_shell.dart';
 import '../screens/splash_screen.dart';
@@ -36,12 +37,17 @@ final routerProvider = Provider<GoRouter>((ref) {
         return atAuthScreen ? null : '/phone';
       }
       // authenticated
-      if (atAuthScreen || state.matchedLocation == '/') return '/conversations';
+      final atProfileSetup = state.matchedLocation == '/profile-setup';
+      if (auth.needsProfileSetup) {
+        return atProfileSetup ? null : '/profile-setup';
+      }
+      if (atAuthScreen || atProfileSetup || state.matchedLocation == '/') return '/conversations';
       return null;
     },
     routes: [
       GoRoute(path: '/', builder: (context, state) => const SplashScreen()),
       GoRoute(path: '/phone', builder: (context, state) => const PhoneEntryScreen()),
+      GoRoute(path: '/profile-setup', builder: (context, state) => const ProfileSetupScreen()),
       GoRoute(
         path: '/conversations',
         builder: (context, state) => const HomeShell(),

@@ -74,6 +74,10 @@
 	<string>Glotta a besoin d'accéder à vos photos pour en envoyer dans une conversation.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Glotta a besoin de votre position pour la partager dans une conversation.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Glotta peut retrouver vos contacts déjà inscrits en comparant des empreintes de numéros, jamais vos numéros en clair.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Glotta utilise Face ID pour déverrouiller l'application.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- Backend de développement en HTTP simple (voir core/config.dart) —

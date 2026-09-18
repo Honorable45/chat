@@ -1,15 +1,27 @@
 import 'dart:async';
 import 'package:collection/collection.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:uuid/uuid.dart';
 import '../models/message.dart';
 import '../services/api_client.dart';
+import '../services/audio_playback_manager.dart';
 import '../services/socket_service.dart';
+import 'auth_state.dart';
 import 'conversations_state.dart';
 
 /// Émojis fixes alignés avec le backend (`ALLOWED_REACTION_EMOJIS`) — jamais
 /// un choix arbitraire, une réaction hors de cette liste est de toute façon
 /// rejetée côté serveur.
 const List<String> allowedReactionEmojis = ['👍', '❤️', '😂', '😮', '😢', '👏'];
+
+const _uuid = Uuid();
+
+/// Délai de sécurité pour l'indicateur de frappe (section 24) : si aucun
+/// `message:stop_typing` n'arrive jamais pour une raison ou une autre
+/// (événement perdu, appareil de l'autre tué brutalement), on ne veut jamais
+/// afficher "en train d'écrire..." indéfiniment.
+const _typingTimeout = Duration(seconds: 8);
 
 class ChatState {
   final List<Message> messages;
@@ -21,6 +33,10 @@ class ChatState {
   /// Message auquel on répond — affiché au-dessus du champ de saisie (voir
   /// ChatScreen), effacé après envoi ou annulation explicite.
   final Message? replyingTo;
+  /// Messages épinglés DANS la conversation (section 20) — distinct du pin
+  /// de conversation. Peut contenir des messages plus anciens que la page
+  /// actuellement chargée dans `messages`.
+  final List<Message> pinnedMessages;
 
   const ChatState({
     this.messages = const [],
@@ -30,6 +46,7 @@ class ChatState {
     this.error,
     this.typingUserIds = const {},
     this.replyingTo,
+    this.pinnedMessages = const [],
   });
 
   ChatState copyWith({
@@ -42,6 +59,7 @@ class ChatState {
     Set<String>? typingUserIds,
     Message? replyingTo,
     bool clearReplyingTo = false,
+    List<Message>? pinnedMessages,
   }) =>
       ChatState(
         messages: messages ?? this.messages,
@@ -51,6 +69,7 @@ class ChatState {
         error: error,
         typingUserIds: typingUserIds ?? this.typingUserIds,
         replyingTo: clearReplyingTo ? null : (replyingTo ?? this.replyingTo),
+        pinnedMessages: pinnedMessages ?? this.pinnedMessages,
       );
 }
 
@@ -69,9 +88,15 @@ class ChatNotifier extends Notifier<ChatState> {
   StreamSubscription<Message>? _updatedSub;
   StreamSubscription<Map<String, dynamic>>? _deletedSub;
   StreamSubscription<Map<String, String>>? _typingSub;
+  StreamSubscription<Map<String, String>>? _stopTypingSub;
   StreamSubscription<Map<String, dynamic>>? _readSub;
   StreamSubscription<Map<String, dynamic>>? _translationSub;
+  StreamSubscription<bool>? _connectionSub;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
   Timer? _stopTypingDebounce;
+  final Map<String, Timer> _typingTimeouts = {};
+  bool _everDisconnected = false;
+  bool _everOffline = false;
 
   @override
   ChatState build() {
@@ -84,14 +109,20 @@ class ChatNotifier extends Notifier<ChatState> {
       _updatedSub?.cancel();
       _deletedSub?.cancel();
       _typingSub?.cancel();
+      _stopTypingSub?.cancel();
       _readSub?.cancel();
       _translationSub?.cancel();
+      _connectionSub?.cancel();
+      _connectivitySub?.cancel();
       _stopTypingDebounce?.cancel();
+      for (final timer in _typingTimeouts.values) {
+        timer.cancel();
+      }
     });
 
     _newSub = SocketService.instance.onNewMessage.listen((m) {
       if (m.conversationId != conversationId) return;
-      state = state.copyWith(messages: [...state.messages, m]);
+      state = state.copyWith(messages: _mergeById(state.messages, [m]));
     });
     _translationSub = SocketService.instance.onTranslationEvent.listen((payload) {
       final messageId = payload['messageId'] as String?;
@@ -107,16 +138,32 @@ class ChatNotifier extends Notifier<ChatState> {
       if (m.conversationId != conversationId) return;
       state = state.copyWith(
         messages: state.messages.map((existing) => existing.id == m.id ? m : existing).toList(),
+        pinnedMessages: _applyPinnedUpdate(state.pinnedMessages, m),
       );
     });
     _deletedSub = SocketService.instance.onMessageDeleted.listen((payload) {
       final id = payload['id'] as String?;
       if (id == null) return;
+      // Un vocal supprimé pendant sa propre lecture doit s'arrêter tout de
+      // suite (section 2) — jamais continuer à jouer un fichier dont le
+      // message vient de disparaître de la conversation.
+      final deleted = state.messages.firstWhereOrNull((m) => m.id == id);
+      final voiceUrl = deleted?.voice?.audioUrl;
+      if (voiceUrl != null) AudioPlaybackManager.instance.stopIfPlaying(voiceUrl);
       state = state.copyWith(messages: state.messages.where((m) => m.id != id).toList());
     });
     _typingSub = SocketService.instance.onTyping.listen((payload) {
       if (payload['conversationId'] != conversationId) return;
-      state = state.copyWith(typingUserIds: {...state.typingUserIds, payload['userId']!});
+      final userId = payload['userId']!;
+      state = state.copyWith(typingUserIds: {...state.typingUserIds, userId});
+      // Filet de sécurité (section 24) : voir _typingTimeout — indépendant du
+      // stop_typing explicite ci-dessous, qui reste le chemin normal.
+      _typingTimeouts[userId]?.cancel();
+      _typingTimeouts[userId] = Timer(_typingTimeout, () => _removeTypingUser(userId));
+    });
+    _stopTypingSub = SocketService.instance.onStopTyping.listen((payload) {
+      if (payload['conversationId'] != conversationId) return;
+      _removeTypingUser(payload['userId']!);
     });
     _readSub = SocketService.instance.onRead.listen((payload) {
       if (payload['conversationId'] != conversationId) return;
@@ -127,9 +174,80 @@ class ChatNotifier extends Notifier<ChatState> {
             .toList(),
       );
     });
+    // Resynchronisation après reconnexion WebSocket (section 23) — sans ça
+    // les événements manqués pendant la coupure ne rattraperaient jamais le
+    // fil (voir le rapport d'exploration : `onConnectionChange` était déjà
+    // émis mais jamais écouté). `_mergeById` garantit qu'aucun message ne
+    // se retrouve dupliqué avec ce qui est déjà affiché.
+    _connectionSub = SocketService.instance.onConnectionChange.listen((connected) {
+      if (!connected) {
+        _everDisconnected = true;
+        return;
+      }
+      if (_everDisconnected) {
+        _everDisconnected = false;
+        unawaited(_resync());
+      }
+    });
+    // File d'envoi hors-ligne, version légère en mémoire (section 21-22,
+    // décision retenue avec l'utilisateur : pas de persistance survivant la
+    // fermeture de l'app) — renvoie automatiquement ce qui est resté
+    // `failed` dès que la connectivité de l'appareil revient.
+    _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
+      final offline = results.every((r) => r == ConnectivityResult.none);
+      if (offline) {
+        _everOffline = true;
+        return;
+      }
+      if (_everOffline) {
+        _everOffline = false;
+        unawaited(retryAllFailed());
+      }
+    });
 
     Future.microtask(_load);
     return const ChatState(loading: true);
+  }
+
+  /// Ajoute/retire/met à jour une entrée de `pinnedMessages` selon
+  /// `m.pinnedAt` — réutilisé par la réception `message:updated` ET par
+  /// `togglePin` (même logique, jamais dupliquée).
+  List<Message> _applyPinnedUpdate(List<Message> pinned, Message m) {
+    final withoutM = pinned.where((p) => p.id != m.id).toList();
+    if (m.pinnedAt == null) return withoutM;
+    return [...withoutM, m]..sort((a, b) => b.pinnedAt!.compareTo(a.pinnedAt!));
+  }
+
+  void _removeTypingUser(String userId) {
+    _typingTimeouts.remove(userId)?.cancel();
+    if (!state.typingUserIds.contains(userId)) return;
+    final next = {...state.typingUserIds}..remove(userId);
+    state = state.copyWith(typingUserIds: next);
+  }
+
+  /// Fusionne par id : les entrées déjà présentes gardent leur place, celles
+  /// manquantes s'ajoutent, celles déjà connues sont mises à jour avec la
+  /// version serveur (plus fraîche) — jamais de doublon visuel, y compris
+  /// pour un message optimiste local (id = clientId, ne collisionne jamais
+  /// avec un id serveur réel).
+  List<Message> _mergeById(List<Message> current, List<Message> incoming) {
+    final byId = {for (final m in current) m.id: m};
+    for (final m in incoming) {
+      byId[m.id] = m;
+    }
+    final merged = byId.values.toList()..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return merged;
+  }
+
+  Future<void> _resync() async {
+    try {
+      final page = await ApiClient.instance.messages(conversationId);
+      state = state.copyWith(messages: _mergeById(state.messages, page.items));
+    } catch (_) {
+      // Best-effort — une resynchronisation manquée n'est jamais bloquante,
+      // la prochaine reconnexion (ou la prochaine ouverture de l'écran)
+      // retentera.
+    }
   }
 
   Future<void> _load() async {
@@ -144,9 +262,19 @@ class ChatNotifier extends Notifier<ChatState> {
         nextCursor: page.nextCursor,
       );
       unawaited(_markRead());
+      unawaited(_loadPinned());
       _hydrateVoiceMessages(page.items);
     } on ApiException catch (e) {
       state = state.copyWith(loading: false, error: e.message);
+    }
+  }
+
+  Future<void> _loadPinned() async {
+    try {
+      final pinned = await ApiClient.instance.pinnedMessages(conversationId);
+      state = state.copyWith(pinnedMessages: pinned);
+    } catch (_) {
+      // best-effort — la bannière reste simplement absente si ce chargement échoue.
     }
   }
 
@@ -201,18 +329,96 @@ class ChatNotifier extends Notifier<ChatState> {
     }
   }
 
+  /// Envoi optimiste (sections 1, 21-22, 30) : le message apparaît tout de
+  /// suite en local (`SendStatus.sending`, horloge à la place des coches),
+  /// remplacé par la version serveur au succès, ou marqué `failed` avec
+  /// possibilité de retenter (voir `retry`) — jamais perdu silencieusement.
+  /// `clientId` (UUID) permet au backend de reconnaître un renvoi après un
+  /// échec réseau ambigu et de ne jamais créer de doublon (voir
+  /// MessagesService.findExistingByClientId côté backend).
   Future<void> send(String text) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
     emitStopTyping();
     final replyToId = state.replyingTo?.id;
     state = state.copyWith(clearReplyingTo: true);
+
+    final clientId = _uuid.v4();
+    final optimistic = Message(
+      id: clientId,
+      conversationId: conversationId,
+      // ChatScreen calcule `own` en comparant senderId à l'utilisateur
+      // courant (jamais deviné autrement) — un senderId vide afficherait ce
+      // message optimiste comme venant de quelqu'un d'autre.
+      senderId: ref.read(authProvider).me?.id ?? '',
+      type: MessageType.text,
+      text: trimmed,
+      // Conservé sur le message optimiste lui-même (pas juste une variable
+      // locale) : un `retry()` ultérieur doit renvoyer la même réponse à X,
+      // jamais la perdre en route.
+      replyToId: replyToId,
+      sentAt: DateTime.now(),
+      createdAt: DateTime.now(),
+      clientId: clientId,
+      sendStatus: SendStatus.sending,
+    );
+    state = state.copyWith(messages: [...state.messages, optimistic]);
+
+    await _sendOptimistic(optimistic);
+  }
+
+  /// Retente l'envoi d'un message resté `failed` — jamais un nouveau
+  /// message, le même `clientId` est réutilisé pour que le backend
+  /// dédoublonne si le premier envoi avait en fait réussi.
+  Future<void> retry(String localId) async {
+    final message = state.messages.firstWhereOrNull((m) => m.id == localId);
+    if (message == null || message.sendStatus != SendStatus.failed) return;
+    state = state.copyWith(
+      messages: state.messages
+          .map((m) => m.id == localId ? m.copyWith(sendStatus: SendStatus.sending) : m)
+          .toList(),
+    );
+    await _sendOptimistic(message);
+  }
+
+  Future<void> _sendOptimistic(Message optimistic) async {
     try {
-      final message =
-          await ApiClient.instance.sendMessage(conversationId, trimmed, replyToId: replyToId);
-      state = state.copyWith(messages: [...state.messages, message]);
-    } on ApiException catch (e) {
-      state = state.copyWith(error: e.message);
+      final sent = await ApiClient.instance.sendMessage(
+        conversationId,
+        optimistic.text ?? '',
+        replyToId: optimistic.replyToId,
+        clientId: optimistic.clientId,
+      );
+      state = state.copyWith(
+        messages: state.messages.map((m) => m.id == optimistic.id ? sent : m).toList(),
+      );
+    } on ApiException catch (_) {
+      state = state.copyWith(
+        messages: state.messages
+            .map((m) => m.id == optimistic.id ? m.copyWith(sendStatus: SendStatus.failed) : m)
+            .toList(),
+      );
+    } catch (_) {
+      // Panne réseau (pas de réponse du tout, pas seulement une erreur
+      // applicative) — même traitement : jamais perdu, juste marqué en échec.
+      state = state.copyWith(
+        messages: state.messages
+            .map((m) => m.id == optimistic.id ? m.copyWith(sendStatus: SendStatus.failed) : m)
+            .toList(),
+      );
+    }
+  }
+
+  /// Renvoie automatiquement tout ce qui est resté `failed` — appelé par
+  /// ConnectivityService au retour du réseau (section 22), jamais par une
+  /// action explicite de l'utilisateur (voir `retry` pour ce cas).
+  Future<void> retryAllFailed() async {
+    final failedIds = state.messages
+        .where((m) => m.sendStatus == SendStatus.failed)
+        .map((m) => m.id)
+        .toList();
+    for (final id in failedIds) {
+      await retry(id);
     }
   }
 
@@ -287,6 +493,55 @@ class ChatNotifier extends Notifier<ChatState> {
         durationSeconds: durationSeconds,
       );
       state = state.copyWith(messages: [...state.messages, message]);
+    } on ApiException catch (e) {
+      state = state.copyWith(error: e.message);
+    }
+  }
+
+  /// "Supprimer pour moi" (section 5B) — retrait local immédiat, jamais
+  /// besoin d'attendre un événement socket (rien n'est diffusé aux autres
+  /// membres pour cette action, contrairement à `deleteForEveryone`).
+  Future<void> deleteForMe(String messageId) async {
+    try {
+      await ApiClient.instance.deleteMessageForMe(messageId);
+      state = state.copyWith(messages: state.messages.where((m) => m.id != messageId).toList());
+    } on ApiException catch (e) {
+      state = state.copyWith(error: e.message);
+    }
+  }
+
+  Future<void> deleteForEveryone(String messageId) async {
+    try {
+      final updated = await ApiClient.instance.deleteMessage(messageId);
+      state = state.copyWith(
+        messages: state.messages.map((m) => m.id == messageId ? updated : m).toList(),
+      );
+    } on ApiException catch (e) {
+      state = state.copyWith(error: e.message);
+    }
+  }
+
+  Future<void> togglePin(String messageId, bool pinned) async {
+    try {
+      final updated = pinned
+          ? await ApiClient.instance.unpinMessage(messageId)
+          : await ApiClient.instance.pinMessage(messageId);
+      state = state.copyWith(
+        messages: state.messages.map((m) => m.id == messageId ? updated : m).toList(),
+        pinnedMessages: _applyPinnedUpdate(state.pinnedMessages, updated),
+      );
+    } on ApiException catch (e) {
+      state = state.copyWith(error: e.message);
+    }
+  }
+
+  /// Utilisé par la bannière "Messages épinglés" (ChatScreen) pour sauter au
+  /// message dans l'historique — réutilise `listAroundMessage`, déjà
+  /// construit pour le même besoin depuis un résultat de recherche.
+  Future<void> jumpToMessage(String messageId) async {
+    try {
+      final window = await ApiClient.instance.messagesAround(conversationId, messageId);
+      state = state.copyWith(messages: _mergeById(state.messages, window));
     } on ApiException catch (e) {
       state = state.copyWith(error: e.message);
     }

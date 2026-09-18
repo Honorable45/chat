@@ -14,6 +14,7 @@ import {
 import type { DefaultEventsMap, Server, Socket } from 'socket.io';
 import { SocketRateLimiter } from '../websocket/socket-rate-limiter';
 import { verifySocketUserId } from '../websocket/socket-auth.util';
+import { PrismaService } from '../prisma/prisma.service';
 import { GroupCallDto, GroupCallMessageDto, GroupCallsService } from './group-calls.service';
 
 interface StartPayload {
@@ -85,11 +86,12 @@ export class GroupCallsGateway implements OnGatewayConnection, OnGatewayDisconne
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
     private readonly groupCalls: GroupCallsService,
+    private readonly prisma: PrismaService,
   ) {}
 
   async handleConnection(client: AppSocket): Promise<void> {
     try {
-      const userId = await verifySocketUserId(client, this.jwt, this.config);
+      const userId = await verifySocketUserId(client, this.jwt, this.config, this.prisma);
       client.data.userId = userId;
       await client.join(this.userRoom(userId));
     } catch (error) {
@@ -130,13 +132,15 @@ export class GroupCallsGateway implements OnGatewayConnection, OnGatewayDisconne
   async handleStart(
     @ConnectedSocket() client: AppSocket,
     @MessageBody() body: StartPayload,
-  ): Promise<AckResult<{ groupCallMessage: GroupCallMessageDto }>> {
+  ): Promise<AckResult<{ busy: true } | { busy: false; groupCallMessage: GroupCallMessageDto }>> {
     const userId = client.data.userId;
     if (!userId) return { ok: false, error: 'Non authentifié.' };
     if (!this.actionLimiter.consume(client.id)) return this.rateLimited();
     try {
       const type = body.type === 'VIDEO' ? 'VIDEO' : 'AUDIO';
-      const result = await this.groupCalls.start(userId, body.conversationId, type);
+      const outcome = await this.groupCalls.start(userId, body.conversationId, type);
+      if (outcome.busy) return { ok: true, busy: true };
+      const result = outcome.message;
       // RINGING uniquement : un participant déjà JOINED (l'appelant, ou
       // quelqu'un qui rejoignait un appel déjà en cours) a déjà l'état à
       // jour via son propre ack, jamais besoin de le sonner lui-même.
@@ -144,7 +148,7 @@ export class GroupCallsGateway implements OnGatewayConnection, OnGatewayDisconne
       for (const p of ringing) {
         this.server.to(this.userRoom(p.userId)).emit('group-call:incoming', result);
       }
-      return { ok: true, groupCallMessage: result };
+      return { ok: true, busy: false, groupCallMessage: result };
     } catch (error) {
       return this.toAckError(error);
     }
@@ -181,12 +185,16 @@ export class GroupCallsGateway implements OnGatewayConnection, OnGatewayDisconne
   async handleJoin(
     @ConnectedSocket() client: AppSocket,
     @MessageBody() body: CallIdPayload,
-  ): Promise<AckResult<{ call: GroupCallDto; peerUserIds: string[] }>> {
+  ): Promise<
+    AckResult<{ busy: true } | { busy: false; call: GroupCallDto; peerUserIds: string[] }>
+  > {
     const userId = client.data.userId;
     if (!userId) return { ok: false, error: 'Non authentifié.' };
     if (!this.actionLimiter.consume(client.id)) return this.rateLimited();
     try {
-      const { groupCall, peerUserIds } = await this.groupCalls.join(userId, body.groupCallId);
+      const outcome = await this.groupCalls.join(userId, body.groupCallId);
+      if (outcome.busy) return { ok: true, busy: true };
+      const { groupCall, peerUserIds } = outcome;
       // Annoncé pour l'UI des autres participants (afficher la tuile du
       // nouveau venu tout de suite) — jamais nécessaire à la signalisation
       // WebRTC elle-même, qui démarre dès que ce nouveau venu émet ses
@@ -196,7 +204,7 @@ export class GroupCallsGateway implements OnGatewayConnection, OnGatewayDisconne
         userId,
         call: groupCall,
       });
-      return { ok: true, call: groupCall, peerUserIds };
+      return { ok: true, busy: false, call: groupCall, peerUserIds };
     } catch (error) {
       return this.toAckError(error);
     }

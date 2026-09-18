@@ -51,7 +51,8 @@ describe('GroupCallsService', () => {
       findMany: jest.Mock;
       update: jest.Mock;
     };
-    groupCallParticipant: { upsert: jest.Mock; update: jest.Mock };
+    groupCallParticipant: { upsert: jest.Mock; update: jest.Mock; findFirst: jest.Mock };
+    call: { findFirst: jest.Mock };
     message: { create: jest.Mock; findUnique: jest.Mock; findUniqueOrThrow: jest.Mock };
     conversationMember: { findUnique: jest.Mock };
   };
@@ -67,7 +68,12 @@ describe('GroupCallsService', () => {
         findMany: jest.fn(),
         update: jest.fn(),
       },
-      groupCallParticipant: { upsert: jest.fn(), update: jest.fn() },
+      groupCallParticipant: {
+        upsert: jest.fn(),
+        update: jest.fn(),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+      call: { findFirst: jest.fn().mockResolvedValue(null) },
       message: { create: jest.fn(), findUnique: jest.fn(), findUniqueOrThrow: jest.fn() },
       conversationMember: { findUnique: jest.fn() },
     };
@@ -145,7 +151,8 @@ describe('GroupCallsService', () => {
         expect.anything(),
         expect.anything(),
       );
-      expect(result.groupCall.participants).toHaveLength(3);
+      if (result.busy) throw new Error('expected busy: false');
+      expect(result.message.groupCall.participants).toHaveLength(3);
     });
 
     it("rejoint l'appel déjà actif de la conversation plutôt que d'en créer un second", async () => {
@@ -170,6 +177,17 @@ describe('GroupCallsService', () => {
           update: expect.objectContaining({ status: 'JOINED' }),
         }),
       );
+      expect(prisma.message.create).not.toHaveBeenCalled();
+    });
+
+    it("renvoie { busy: true } si l'appelant participe déjà à un appel 1:1 (section 12 : jamais vérifié auparavant pour un appel de groupe)", async () => {
+      prisma.conversation.findUnique.mockResolvedValue(conversation);
+      prisma.groupCall.findFirst.mockResolvedValue(null);
+      prisma.call.findFirst.mockResolvedValue({ id: 'active-1to1-call' });
+
+      const result = await service.start('alice', 'conv-1', 'AUDIO');
+
+      expect(result).toEqual({ busy: true });
       expect(prisma.message.create).not.toHaveBeenCalled();
     });
   });
@@ -303,7 +321,18 @@ describe('GroupCallsService', () => {
           data: expect.objectContaining({ status: 'JOINED' }),
         }),
       );
+      if (result.busy) throw new Error('expected busy: false');
       expect(result.peerUserIds).toEqual(['alice']);
+    });
+
+    it("renvoie { busy: true } si l'utilisateur est déjà engagé dans un autre appel (1:1 ou groupe)", async () => {
+      prisma.groupCall.findUnique.mockResolvedValue(buildCall());
+      prisma.call.findFirst.mockResolvedValue({ id: 'other-call' });
+
+      const result = await service.join('bob', 'call-1');
+
+      expect(result).toEqual({ busy: true });
+      expect(prisma.groupCallParticipant.update).not.toHaveBeenCalled();
     });
   });
 

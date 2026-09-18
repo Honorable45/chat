@@ -49,6 +49,14 @@ export class UpdateProfileDto {
   @IsBoolean()
   notificationsEnabled?: boolean;
 
+  // Section 9 : masque l'aperçu du message dans les notifications système
+  // ("Glotta — Nouveau message" au lieu de "Jean : Salut...") — voir
+  // push-text.util.ts, n'affecte jamais le panneau in-app.
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  hideNotificationContent?: boolean;
+
   // Consentement explicite (section 15) : ON/OFF volontaire, jamais activé
   // par défaut (voir Profile.voiceCloningConsent dans le schéma).
   @ApiPropertyOptional({

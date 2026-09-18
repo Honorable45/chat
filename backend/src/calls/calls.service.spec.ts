@@ -42,8 +42,10 @@ describe('CallsService', () => {
   let prisma: {
     conversation: { findUnique: jest.Mock; update: jest.Mock };
     call: { findFirst: jest.Mock; findUnique: jest.Mock; update: jest.Mock; findMany: jest.Mock };
+    groupCallParticipant: { findFirst: jest.Mock };
     message: { create: jest.Mock };
     conversationMember: { findUnique: jest.Mock };
+    $transaction: jest.Mock;
   };
   let notifications: { create: jest.Mock };
   let jwt: { signAsync: jest.Mock; verifyAsync: jest.Mock };
@@ -58,8 +60,13 @@ describe('CallsService', () => {
     prisma = {
       conversation: { findUnique: jest.fn(), update: jest.fn() },
       call: { findFirst: jest.fn(), findUnique: jest.fn(), update: jest.fn(), findMany: jest.fn() },
+      groupCallParticipant: { findFirst: jest.fn().mockResolvedValue(null) },
       message: { create: jest.fn() },
       conversationMember: { findUnique: jest.fn() },
+      // Simule une transaction interactive en rejouant simplement le callback
+      // avec le même mock `prisma` en guise de `tx` — suffisant ici, aucune
+      // vraie isolation transactionnelle à simuler pour ces tests unitaires.
+      $transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(prisma)),
     };
     notifications = { create: jest.fn().mockResolvedValue(null) };
     jwt = {
@@ -120,6 +127,32 @@ describe('CallsService', () => {
     it("renvoie { busy: true } sans rien écrire si l'appelé participe déjà à un appel", async () => {
       prisma.conversation.findUnique.mockResolvedValue(conversation);
       prisma.call.findFirst.mockResolvedValue(buildCall({ id: 'other-call' }));
+
+      const result = await service.invite('alice', 'conv-1', 'bob');
+
+      expect(result).toEqual({ busy: true });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+    });
+
+    it("renvoie { busy: true } sans rien écrire si l'APPELANT est déjà engagé dans un autre appel (bug corrigé : seul l'appelé était vérifié auparavant)", async () => {
+      prisma.conversation.findUnique.mockResolvedValue(conversation);
+      // Seul le premier appel à findFirst (celui de l'appelant) renvoie un
+      // appel actif — celui de l'appelé (second appel) est libre.
+      prisma.call.findFirst.mockResolvedValueOnce(buildCall({ id: 'alice-active-call' }));
+      prisma.call.findFirst.mockResolvedValueOnce(null);
+
+      const result = await service.invite('alice', 'conv-1', 'bob');
+
+      expect(result).toEqual({ busy: true });
+      expect(prisma.message.create).not.toHaveBeenCalled();
+    });
+
+    it("renvoie { busy: true } si l'appelé participe déjà à un appel de groupe actif", async () => {
+      prisma.conversation.findUnique.mockResolvedValue(conversation);
+      prisma.call.findFirst.mockResolvedValue(null);
+      prisma.groupCallParticipant.findFirst
+        .mockResolvedValueOnce(null) // appelant : libre
+        .mockResolvedValueOnce({ id: 'participation-1' }); // appelé : déjà en appel de groupe
 
       const result = await service.invite('alice', 'conv-1', 'bob');
 

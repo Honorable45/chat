@@ -8,12 +8,10 @@ import '../../widgets/auth_shell.dart';
 import 'two_factor_pin_screen.dart';
 
 /// Saisie du code à 6 chiffres reçu par SMS — enchaîne sur
-/// AuthNotifier.verifyRegisterOtp ou verifyLoginOtp selon `purpose`. Le nom
-/// (optionnel à l'inscription, comme avant) n'est pas demandé ici : un
-/// compte tout juste créé porte un nom d'utilisateur généré automatiquement,
-/// modifiable ensuite depuis Paramètres → Profil (déjà pris en charge par
-/// EditProfileScreen) — même principe que WhatsApp, qui sépare vérification
-/// du numéro et configuration du profil.
+/// AuthNotifier.verifyRegisterOtp ou verifyLoginOtp selon `purpose`. Après une
+/// inscription réussie, `AuthState.needsProfileSetup` passe à `true` et le
+/// routeur (voir router.dart) redirige automatiquement vers
+/// ProfileSetupScreen (nom, username, photo, bio) — rien à faire ici.
 class OtpVerifyScreen extends ConsumerStatefulWidget {
   final String phone;
   final OtpPurpose purpose;
@@ -60,8 +58,9 @@ class _OtpVerifyScreenState extends ConsumerState<OtpVerifyScreen> {
     try {
       if (widget.purpose == OtpPurpose.register) {
         await ref.read(authProvider.notifier).verifyRegisterOtp(phone: widget.phone, code: code);
-        // Rien à faire ensuite : AuthState devient "authenticated", le
-        // routeur (voir router.dart) redirige tout seul vers /conversations.
+        // Rien à faire ensuite : AuthState devient "authenticated" avec
+        // needsProfileSetup=true, le routeur (voir router.dart) redirige tout
+        // seul vers /profile-setup.
       } else {
         final result = await ref
             .read(authProvider.notifier)

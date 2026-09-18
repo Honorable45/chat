@@ -21,4 +21,10 @@ export class SendStickerMessageDto {
   @IsOptional()
   @IsString()
   replyToId?: string;
+
+  @ApiPropertyOptional({ description: 'Id idempotent généré côté client (UUID)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  clientId?: string;
 }

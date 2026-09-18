@@ -11,6 +11,7 @@ import {
   GroupCallStatus,
   Prisma,
 } from '@prisma/client';
+import { isUserInAnyCall } from '../calls/call-concurrency.util';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { resolveAvatarUrl } from '../profiles/avatar.util';
@@ -105,7 +106,7 @@ export class GroupCallsService {
     userId: string,
     conversationId: string,
     type: CallType,
-  ): Promise<GroupCallMessageDto> {
+  ): Promise<{ busy: true } | { busy: false; message: GroupCallMessageDto }> {
     const conversation = await this.prisma.conversation.findUnique({
       where: { id: conversationId },
       include: { members: { where: { leftAt: null }, select: { userId: true } } },
@@ -119,8 +120,17 @@ export class GroupCallsService {
       where: { conversationId, status: 'ACTIVE' },
       include: GROUP_CALL_INCLUDE,
     });
+
+    // Section 12 : croise aussi Call (1:1), jusqu'ici jamais vérifié pour un
+    // appel de groupe. `excludeGroupCallId` : rejoindre l'appel de groupe
+    // pour lequel on vient justement d'être invité (RINGING dans `existing`)
+    // n'est jamais "occupé ailleurs".
+    if (await isUserInAnyCall(this.prisma, userId, { excludeGroupCallId: existing?.id })) {
+      return { busy: true };
+    }
+
     if (existing) {
-      return this.joinExisting(userId, existing);
+      return { busy: false, message: await this.joinExisting(userId, existing) };
     }
 
     const otherMemberIds = memberIds.filter((id) => id !== userId);
@@ -168,14 +178,17 @@ export class GroupCallsService {
       ),
     );
 
-    return this.toMessageDto(
-      message.id,
-      conversationId,
-      userId,
-      message.sentAt,
-      message.createdAt,
-      call,
-    );
+    return {
+      busy: false,
+      message: this.toMessageDto(
+        message.id,
+        conversationId,
+        userId,
+        message.sentAt,
+        message.createdAt,
+        call,
+      ),
+    };
   }
 
   /**
@@ -315,11 +328,16 @@ export class GroupCallsService {
   async join(
     userId: string,
     groupCallId: string,
-  ): Promise<{ groupCall: GroupCallDto; peerUserIds: string[] }> {
+  ): Promise<{ busy: true } | { busy: false; groupCall: GroupCallDto; peerUserIds: string[] }> {
     const call = await this.requireActiveCall(groupCallId);
     const participant = call.participants.find((p) => p.userId === userId);
     if (!participant) {
       throw new ForbiddenException("Vous n'êtes pas invité à cet appel.");
+    }
+
+    // Section 12 — voir start() pour le même raisonnement (excludeGroupCallId).
+    if (await isUserInAnyCall(this.prisma, userId, { excludeGroupCallId: groupCallId })) {
+      return { busy: true };
     }
 
     await this.prisma.groupCallParticipant.update({
@@ -331,7 +349,7 @@ export class GroupCallsService {
     const peerUserIds = updated.participants
       .filter((p) => p.status === 'JOINED' && p.userId !== userId)
       .map((p) => p.userId);
-    return { groupCall: updated, peerUserIds };
+    return { busy: false, groupCall: updated, peerUserIds };
   }
 
   async decline(userId: string, groupCallId: string): Promise<GroupCallDto> {

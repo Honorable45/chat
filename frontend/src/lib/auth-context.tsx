@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { api, API_URL, ApiError, type LoginInput, type RegisterInput } from "./api";
+import { api, API_URL, ApiError, refreshSession, type LoginInput, type RegisterInput } from "./api";
 import { isPushSupported, subscribeToPush } from "./push";
 import { clearTokens, getAccessToken, setTokens } from "./token-store";
 import type { AuthTokens, Me } from "./types";
@@ -30,9 +30,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const loadMe = useCallback(async () => {
     if (!getAccessToken()) {
-      setUser(null);
-      setStatus("anonymous");
-      return;
+      // L'access token ne vit plus qu'en mémoire (audit de sécurité, voir
+      // token-store.ts) — il n'en reste donc aucune trace après un
+      // rechargement de page. Le reconstituer ici via le cookie httpOnly
+      // glotta_refresh (jamais lu directement par ce code) avant de
+      // conclure "anonyme" : c'est le seul moyen de rester connecté d'une
+      // visite à l'autre maintenant que rien n'est plus lisible en JS.
+      const refreshed = await refreshSession();
+      if (!refreshed) {
+        setUser(null);
+        setStatus("anonymous");
+        return;
+      }
     }
     try {
       const me = await api.users.me();
@@ -138,6 +147,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const loginWithTokens = useCallback(async (tokens: AuthTokens) => {
     setTokens(tokens);
+    // Pose aussi les cookies httpOnly (audit de sécurité) : sans ceci, cette
+    // session resterait valide pour l'onglet courant (access token en
+    // mémoire) mais ne survivrait à aucun rechargement de page, faute de
+    // cookie glotta_refresh pour la reconstituer (voir loadMe ci-dessus) —
+    // DeviceLinkService/DeviceLinkGateway restent inchangés, ce n'est
+    // qu'un relais côté navigateur des tokens déjà reçus par WebSocket.
+    await api.auth.adoptTokens(tokens.refreshToken);
     setUser(await api.users.me());
     setStatus("authenticated");
   }, []);

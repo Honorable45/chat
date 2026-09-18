@@ -110,7 +110,7 @@ export class NotificationsService {
     // déjà best-effort en interne.
     if (!PUSH_EXCLUDED_TYPES.has(type)) {
       const pushMessage = {
-        ...buildPushText(type, enrichedPayload),
+        ...buildPushText(type, enrichedPayload, profile?.hideNotificationContent ?? false),
         url: buildPushUrl(enrichedPayload),
       };
       void this.push.sendToUser(userId, pushMessage);

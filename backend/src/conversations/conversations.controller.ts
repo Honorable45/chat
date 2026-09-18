@@ -23,7 +23,7 @@ import { memoryStorage } from 'multer';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuthenticatedUser } from '../auth/interfaces/jwt-payload.interface';
-import { MAX_IMAGE_SIZE_BYTES } from '../uploads/media-upload.constants';
+import { MAX_IMAGE_SIZE_BYTES, UPLOAD_FIELD_LIMITS } from '../uploads/media-upload.constants';
 import { ConversationsService } from './conversations.service';
 import { AddMembersDto } from './dto/add-members.dto';
 import { CreateConversationDto } from './dto/create-conversation.dto';
@@ -37,7 +37,11 @@ import { UpdateMemberRoleDto } from './dto/update-member-role.dto';
 // Même marge que les uploads d'images ailleurs (avatar, messages) —
 // MessagesService/ConversationsService restent la source de vérité pour le
 // message d'erreur, Multer ne fait ici qu'une garde-fou générique.
-const PHOTO_UPLOAD_LIMITS = { fileSize: MAX_IMAGE_SIZE_BYTES + 1024 };
+const PHOTO_UPLOAD_LIMITS = {
+  fileSize: MAX_IMAGE_SIZE_BYTES + 1024,
+  ...UPLOAD_FIELD_LIMITS,
+  files: 1,
+};
 
 @ApiTags('conversations')
 @ApiBearerAuth()

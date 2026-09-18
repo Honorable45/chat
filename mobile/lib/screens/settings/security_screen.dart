@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../core/theme.dart';
 import '../../models/auth_flow.dart';
 import '../../services/api_client.dart';
+import 'app_lock_screen.dart';
 import 'devices_screen.dart';
 
 /// Paramètres → Sécurité (sections 3-4-10) : vérification en deux étapes
@@ -189,6 +190,20 @@ class _SecurityScreenState extends State<SecurityScreen> {
                   ),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _manageRecoveryEmail,
+                ),
+                const SizedBox(height: 12),
+                _sectionLabel(c, 'Confidentialité'),
+                ListTile(
+                  leading: Icon(Icons.lock_outline, color: c.muted),
+                  title: const Text("Verrouillage de l'application"),
+                  subtitle: Text(
+                    'PIN, mot de passe, schéma ou biométrie',
+                    style: TextStyle(color: c.muted),
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AppLockScreen()),
+                  ),
                 ),
                 const SizedBox(height: 12),
                 _sectionLabel(c, 'Appareils'),

@@ -55,6 +55,29 @@ class _SettingsSectionsListState extends ConsumerState<SettingsSectionsList> {
     }
   }
 
+  Future<void> _setNotificationsEnabled(bool value) async {
+    try {
+      await ApiClient.instance.updateMyProfile(notificationsEnabled: value);
+      await _refreshMe();
+    } on ApiException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+
+  Future<void> _setHideNotificationContent(bool value) async {
+    try {
+      await ApiClient.instance.updateMyProfile(hideNotificationContent: value);
+      await _refreshMe();
+    } on ApiException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+
+  Future<void> _refreshMe() async {
+    final me = await ApiClient.instance.me();
+    ref.read(authProvider.notifier).setMe(me);
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.glotta;
@@ -86,6 +109,28 @@ class _SettingsSectionsListState extends ConsumerState<SettingsSectionsList> {
               ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
               : const Icon(Icons.chevron_right),
           onTap: languages == null ? null : () => _pickLanguage(context, languages, _setReceiveLanguage),
+        ),
+        const SizedBox(height: 12),
+        _sectionLabel(c, 'Notifications'),
+        SwitchListTile(
+          title: const Text('Notifications'),
+          subtitle: Text(
+            'Nouveaux messages, vocaux et appels.',
+            style: TextStyle(color: c.muted),
+          ),
+          value: me.profile?.notificationsEnabled ?? true,
+          activeThumbColor: c.accent2,
+          onChanged: _setNotificationsEnabled,
+        ),
+        SwitchListTile(
+          title: const Text('Masquer le contenu'),
+          subtitle: Text(
+            'Affiche "Glotta — Nouveau message" au lieu de l’aperçu (section 9).',
+            style: TextStyle(color: c.muted),
+          ),
+          value: me.profile?.hideNotificationContent ?? false,
+          activeThumbColor: c.accent2,
+          onChanged: _setHideNotificationContent,
         ),
         const SizedBox(height: 12),
         _sectionLabel(c, 'Compte'),

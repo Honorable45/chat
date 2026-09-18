@@ -344,6 +344,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ),
       body: Column(
         children: [
+          if (chat.pinnedMessages.isNotEmpty) _pinnedBanner(c, chat.pinnedMessages),
           Expanded(
             child: chat.loading
                 ? const Center(child: CircularProgressIndicator())
@@ -407,6 +408,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                   onReply: (message) => ref
                                       .read(chatProvider(widget.conversationId).notifier)
                                       .setReplyingTo(message),
+                                  onDeleteForMe: (messageId) => ref
+                                      .read(chatProvider(widget.conversationId).notifier)
+                                      .deleteForMe(messageId),
+                                  onDeleteForEveryone: (messageId) => ref
+                                      .read(chatProvider(widget.conversationId).notifier)
+                                      .deleteForEveryone(messageId),
+                                  onTogglePin: (messageId, currentlyPinned) => ref
+                                      .read(chatProvider(widget.conversationId).notifier)
+                                      .togglePin(messageId, currentlyPinned),
+                                  onRetry: (messageId) => ref
+                                      .read(chatProvider(widget.conversationId).notifier)
+                                      .retry(messageId),
                                 ),
                               ],
                             );
@@ -423,6 +436,57 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// "Messages épinglés" (section 20) — affiche le plus récemment épinglé,
+  /// un tap saute à son emplacement dans l'historique (voir
+  /// ChatNotifier.jumpToMessage, réutilise l'endpoint déjà construit pour
+  /// sauter à un résultat de recherche).
+  Widget _pinnedBanner(GlottaColors c, List<Message> pinned) {
+    final top = pinned.first;
+    String preview;
+    switch (top.type) {
+      case MessageType.voice:
+        preview = '🎤 Message vocal';
+      case MessageType.image:
+        preview = '📷 Photo';
+      default:
+        preview = top.text ?? 'Message épinglé';
+    }
+    return InkWell(
+      onTap: () =>
+          ref.read(chatProvider(widget.conversationId).notifier).jumpToMessage(top.id),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: c.surfaceRaised.withValues(alpha: 0.6),
+          border: Border(bottom: BorderSide(color: c.border)),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.push_pin, size: 15, color: c.accent2),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    pinned.length > 1 ? '${pinned.length} messages épinglés' : 'Message épinglé',
+                    style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: c.accent2),
+                  ),
+                  Text(
+                    preview,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11.5, color: c.muted),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

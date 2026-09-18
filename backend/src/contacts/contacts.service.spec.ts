@@ -53,6 +53,7 @@ describe('ContactsService', () => {
     conversationMember: { findUnique: jest.Mock; findMany: jest.Mock };
     message: { create: jest.Mock; findUnique: jest.Mock };
     conversation: { update: jest.Mock };
+    user: { findMany: jest.Mock };
     $transaction: jest.Mock;
   };
   let users: { getPublicProfile: jest.Mock };
@@ -73,6 +74,7 @@ describe('ContactsService', () => {
       conversationMember: { findUnique: jest.fn(), findMany: jest.fn() },
       message: { create: jest.fn(), findUnique: jest.fn() },
       conversation: { update: jest.fn() },
+      user: { findMany: jest.fn() },
       $transaction: jest.fn(),
     };
     users = { getPublicProfile: jest.fn().mockResolvedValue(buildPublicProfile()) };
@@ -438,6 +440,33 @@ describe('ContactsService', () => {
       expect(result).toEqual(
         expect.objectContaining({ reactions: [], mentions: [], mentionsEveryone: false }),
       );
+    });
+  });
+
+  describe('matchPhones', () => {
+    it('ne fait aucune requête et renvoie [] pour une liste de hashs vide', async () => {
+      await expect(service.matchPhones('alice', [])).resolves.toEqual([]);
+      expect(prisma.user.findMany).not.toHaveBeenCalled();
+    });
+
+    it('cherche par phoneHash, exclut soi-même, et hydrate via UsersService (jamais le téléphone)', async () => {
+      prisma.user.findMany.mockResolvedValue([{ id: 'bob' }, { id: 'carol' }]);
+      users.getPublicProfile
+        .mockResolvedValueOnce(buildPublicProfile({ id: 'bob' }))
+        .mockResolvedValueOnce(buildPublicProfile({ id: 'carol', username: 'carol' }));
+
+      const result = await service.matchPhones('alice', ['hash-bob', 'hash-carol']);
+
+      expect(prisma.user.findMany).toHaveBeenCalledWith({
+        where: {
+          phoneHash: { in: ['hash-bob', 'hash-carol'] },
+          isActive: true,
+          id: { not: 'alice' },
+        },
+        select: { id: true },
+      });
+      expect(result.map((u) => u.id)).toEqual(['bob', 'carol']);
+      expect(result[0]).not.toHaveProperty('phone');
     });
   });
 });

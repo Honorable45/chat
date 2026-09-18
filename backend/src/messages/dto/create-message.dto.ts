@@ -16,4 +16,13 @@ export class CreateMessageDto {
   @IsOptional()
   @IsString()
   replyToId?: string;
+
+  // Anti-doublon (section 30) : id généré côté client, réutilisé à l'identique
+  // en cas de renvoi après un échec réseau ambigu — voir
+  // MessagesService.findExistingByClientId.
+  @ApiPropertyOptional({ description: 'Id idempotent généré côté client (UUID)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  clientId?: string;
 }

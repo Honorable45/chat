@@ -17,6 +17,7 @@ function buildUser(overrides: Partial<User> = {}): User {
     phone: null,
     passwordHash: 'hashed',
     phoneVerifiedAt: null,
+    phoneHash: null,
     twoFactorEnabled: false,
     twoFactorPinHash: null,
     recoveryEmail: null,
@@ -51,6 +52,7 @@ function buildProfile(overrides: Partial<Profile> = {}): Profile {
     whoCanMessageMe: 'EVERYONE',
     whoCanSeeMyStatus: 'EVERYONE',
     notificationsEnabled: true,
+    hideNotificationContent: false,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -67,6 +69,9 @@ function buildMember(overrides: Partial<ConversationMember> = {}): ConversationM
     lastReadAt: null,
     isArchived: false,
     isMuted: false,
+    isPinned: false,
+    pinnedAt: null,
+    hiddenAt: null,
     leftAt: null,
     ...overrides,
   };
@@ -116,7 +121,7 @@ describe('ConversationsService', () => {
   };
   let presence: { getPresence: jest.Mock };
   let contacts: { areContacts: jest.Mock; statusWith: jest.Mock };
-  let events: { emitToUsers: jest.Mock };
+  let events: { emitToUsers: jest.Mock; emitToUser: jest.Mock };
   let notifications: { create: jest.Mock };
   let storage: {
     save: jest.Mock;
@@ -160,7 +165,7 @@ describe('ConversationsService', () => {
       areContacts: jest.fn().mockResolvedValue(false),
       statusWith: jest.fn().mockResolvedValue({ status: 'NONE' }),
     };
-    events = { emitToUsers: jest.fn() };
+    events = { emitToUsers: jest.fn(), emitToUser: jest.fn() };
     notifications = { create: jest.fn().mockResolvedValue(null) };
     storage = {
       save: jest.fn().mockResolvedValue({ key: 'group-photo/generated.jpg', sizeBytes: 123 }),
@@ -370,25 +375,24 @@ describe('ConversationsService', () => {
     });
 
     it('pagine par curseur : signale nextCursor quand il reste une page', async () => {
-      prisma.conversationMember.findMany.mockResolvedValueOnce([
-        { conversationId: 'conv-1' },
-        { conversationId: 'conv-2' },
-      ]);
       const rows = ['conv-a', 'conv-b', 'conv-c'].map((id) => ({
-        ...buildConversation({ id }),
-        members: [
-          {
-            ...buildMember({ userId: 'user-1' }),
-            user: { ...buildUser(), profile: buildProfile() },
-          },
-        ],
-        messages: [],
+        ...buildMember({ userId: 'user-1', conversationId: id }),
+        conversation: {
+          ...buildConversation({ id }),
+          members: [
+            {
+              ...buildMember({ userId: 'user-1', conversationId: id }),
+              user: { ...buildUser(), profile: buildProfile() },
+            },
+          ],
+          messages: [],
+        },
       }));
-      prisma.conversation.findMany.mockResolvedValue(rows);
+      prisma.conversationMember.findMany.mockResolvedValueOnce(rows);
 
       const result = await service.listMine('user-1', { limit: 2 });
 
-      expect(prisma.conversation.findMany).toHaveBeenCalledWith(
+      expect(prisma.conversationMember.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ take: 3 }),
       );
       expect(result.items).toHaveLength(2);
@@ -397,6 +401,16 @@ describe('ConversationsService', () => {
   });
 
   describe('updateMembership', () => {
+    function mockSuccessfulUpdate() {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMember());
+      prisma.conversationMember.update.mockResolvedValue(buildMember());
+      prisma.conversation.findUnique.mockResolvedValue({
+        ...buildConversation({ id: 'conv-1' }),
+        members: [{ ...buildMember(), user: { ...buildUser(), profile: buildProfile() } }],
+        messages: [],
+      });
+    }
+
     it("refuse de modifier les préférences d'une conversation dont on n'est plus membre (leftAt)", async () => {
       prisma.conversationMember.findUnique.mockResolvedValue(buildMember({ leftAt: new Date() }));
 
@@ -404,6 +418,66 @@ describe('ConversationsService', () => {
         service.updateMembership('user-1', 'conv-1', { isMuted: true }),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(prisma.conversationMember.update).not.toHaveBeenCalled();
+    });
+
+    it('épingle et pose pinnedAt ; désépingler efface pinnedAt', async () => {
+      mockSuccessfulUpdate();
+
+      /* eslint-disable @typescript-eslint/no-unsafe-assignment -- expect.objectContaining
+         imbriqué est typé `any` par @types/jest, sans danger dans une simple assertion. */
+      await service.updateMembership('user-1', 'conv-1', { isPinned: true });
+      expect(prisma.conversationMember.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ isPinned: true, pinnedAt: expect.any(Date) }),
+        }),
+      );
+
+      await service.updateMembership('user-1', 'conv-1', { isPinned: false });
+      expect(prisma.conversationMember.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ isPinned: false, pinnedAt: null }),
+        }),
+      );
+      /* eslint-enable @typescript-eslint/no-unsafe-assignment */
+    });
+
+    it('markUnread remet lastReadAt à null plutôt que de le stocker tel quel', async () => {
+      mockSuccessfulUpdate();
+
+      await service.updateMembership('user-1', 'conv-1', { markUnread: true });
+
+      /* eslint-disable @typescript-eslint/no-unsafe-assignment -- expect.objectContaining
+         imbriqué est typé `any` par @types/jest, sans danger dans une simple assertion. */
+      expect(prisma.conversationMember.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ lastReadAt: null }) }),
+      );
+      /* eslint-enable @typescript-eslint/no-unsafe-assignment */
+    });
+
+    it('hidden pose hiddenAt', async () => {
+      mockSuccessfulUpdate();
+
+      await service.updateMembership('user-1', 'conv-1', { hidden: true });
+
+      /* eslint-disable @typescript-eslint/no-unsafe-assignment -- expect.objectContaining
+         imbriqué est typé `any` par @types/jest, sans danger dans une simple assertion. */
+      expect(prisma.conversationMember.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ hiddenAt: expect.any(Date) }) }),
+      );
+      /* eslint-enable @typescript-eslint/no-unsafe-assignment */
+    });
+
+    it("diffuse conversation:membership-updated vers l'utilisateur lui-même, jamais aux autres membres", async () => {
+      mockSuccessfulUpdate();
+
+      await service.updateMembership('user-1', 'conv-1', { isMuted: true });
+
+      expect(events.emitToUser).toHaveBeenCalledWith(
+        'user-1',
+        'conversation:membership-updated',
+        expect.anything(),
+      );
+      expect(events.emitToUsers).not.toHaveBeenCalled();
     });
   });
 

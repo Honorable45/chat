@@ -58,6 +58,7 @@ function toMeDto(user: UserWithRelations, presence: PresenceInfo) {
           whoCanMessageMe: user.profile.whoCanMessageMe,
           whoCanSeeMyStatus: user.profile.whoCanSeeMyStatus,
           notificationsEnabled: user.profile.notificationsEnabled,
+          hideNotificationContent: user.profile.hideNotificationContent,
           voiceCloningConsent: user.profile.voiceCloningConsent,
           // Jamais l'identifiant réel du modèle (référence interne au
           // fournisseur de clonage) — seulement s'il en existe un.
@@ -125,7 +126,6 @@ export class UsersService {
         lastName: dto.lastName,
         username: dto.username,
         email: dto.email,
-        phone: dto.phone,
         primaryLanguageId: primaryLanguage?.id,
         preferredReceiveLanguageId: preferredLanguage?.id,
         // Remplace intégralement les langues parlées quand la liste est fournie
@@ -202,15 +202,6 @@ export class UsersService {
         this.prisma.user.findUnique({ where: { email: dto.email } }).then((existing) => {
           if (existing && existing.id !== userId) {
             throw new ConflictException('Cet email est déjà utilisé.');
-          }
-        }),
-      );
-    }
-    if (dto.phone) {
-      checks.push(
-        this.prisma.user.findUnique({ where: { phone: dto.phone } }).then((existing) => {
-          if (existing && existing.id !== userId) {
-            throw new ConflictException('Ce numéro est déjà utilisé.');
           }
         }),
       );

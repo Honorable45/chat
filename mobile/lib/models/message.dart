@@ -269,6 +269,12 @@ class MessageAttachment {
       );
 }
 
+/// État d'envoi purement client (section 21-22) — `null` signifie "confirmé
+/// par le serveur", jamais stocké/renvoyé par le backend. `sending` affiche
+/// une horloge à la place des coches, `failed` une icône d'erreur avec
+/// possibilité de retenter (voir ChatNotifier.retry).
+enum SendStatus { sending, failed }
+
 class Message {
   final String id;
   final String conversationId;
@@ -281,6 +287,8 @@ class Message {
   final ReplyToSummary? replyTo;
   final DateTime? editedAt;
   final DateTime? deletedAt;
+  final DateTime? pinnedAt;
+  final String? pinnedById;
   final DateTime sentAt;
   final DateTime? deliveredAt;
   final DateTime? readAt;
@@ -291,6 +299,11 @@ class Message {
   final VoiceDetails? voice;
   final List<MessageAttachment> attachments;
   final LocationDetails? location;
+  // Anti-doublon (section 30) : généré côté client à l'envoi, jamais affiché
+  // — sert uniquement à faire correspondre un message optimiste local à la
+  // réponse serveur, et à dédupliquer un renvoi (voir ChatNotifier.send).
+  final String? clientId;
+  final SendStatus? sendStatus;
 
   const Message({
     required this.id,
@@ -304,6 +317,8 @@ class Message {
     this.replyTo,
     this.editedAt,
     this.deletedAt,
+    this.pinnedAt,
+    this.pinnedById,
     required this.sentAt,
     this.deliveredAt,
     this.readAt,
@@ -314,6 +329,8 @@ class Message {
     this.voice,
     this.attachments = const [],
     this.location,
+    this.clientId,
+    this.sendStatus,
   });
 
   Message copyWith({
@@ -321,6 +338,11 @@ class Message {
     DateTime? readAt,
     List<MessageReaction>? reactions,
     VoiceDetails? voice,
+    DateTime? pinnedAt,
+    String? pinnedById,
+    bool clearPinned = false,
+    SendStatus? sendStatus,
+    bool clearSendStatus = false,
   }) =>
       Message(
         id: id,
@@ -334,6 +356,8 @@ class Message {
         replyTo: replyTo,
         editedAt: editedAt,
         deletedAt: deletedAt,
+        pinnedAt: clearPinned ? null : (pinnedAt ?? this.pinnedAt),
+        pinnedById: clearPinned ? null : (pinnedById ?? this.pinnedById),
         sentAt: sentAt,
         deliveredAt: deliveredAt ?? this.deliveredAt,
         readAt: readAt ?? this.readAt,
@@ -344,6 +368,8 @@ class Message {
         voice: voice ?? this.voice,
         attachments: attachments,
         location: location,
+        clientId: clientId,
+        sendStatus: clearSendStatus ? null : (sendStatus ?? this.sendStatus),
       );
 
   factory Message.fromJson(Map<String, dynamic> json) => Message(
@@ -360,6 +386,8 @@ class Message {
             : ReplyToSummary.fromJson(json['replyTo'] as Map<String, dynamic>),
         editedAt: json['editedAt'] == null ? null : DateTime.parse(json['editedAt'] as String),
         deletedAt: json['deletedAt'] == null ? null : DateTime.parse(json['deletedAt'] as String),
+        pinnedAt: json['pinnedAt'] == null ? null : DateTime.parse(json['pinnedAt'] as String),
+        pinnedById: json['pinnedById'] as String?,
         sentAt: DateTime.parse(json['sentAt'] as String),
         deliveredAt:
             json['deliveredAt'] == null ? null : DateTime.parse(json['deliveredAt'] as String),

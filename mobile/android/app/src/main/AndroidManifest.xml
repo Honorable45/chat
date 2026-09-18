@@ -26,10 +26,31 @@
          canal "Appels entrants". -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Synchronisation des contacts téléphoniques, optionnelle et explicite
+         (voir contact_sync_service.dart) — seuls des hashs de numéros
+         quittent l'appareil, jamais le carnet d'adresses lui-même. -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Verrouillage de l'application par biométrie (voir biometric_service.dart,
+         `local_auth`) — l'app ne reçoit jamais l'empreinte/le visage lui-même,
+         seulement succès/échec, gérés par l'API biométrique native. -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- Appel entrant plein-écran par-dessus l'écran de verrouillage (section
+         11, voir NotificationService._showForMessage : fullScreenIntent sur
+         le canal "Appels entrants") — sans quoi Android ne montrerait qu'une
+         notification standard, jamais l'activité elle-même tant que
+         l'appareil est verrouillé. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <application
         android:label="glotta_mobile"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <!-- showWhenLocked/turnScreenOn : nécessaires pour qu'un appel entrant
+             plein-écran (voir fullScreenIntent dans NotificationService)
+             s'affiche par-dessus l'écran de verrouillage OS plutôt que de
+             rester coincé derrière lui. Aucune régression de sécurité : le
+             verrouillage GLOBAL de l'app (AppLockGate, sections 8-10) reste
+             un rendu Flutter par-dessus tout le reste, montré à l'identique
+             que l'app soit relancée par-dessus le keyguard OS ou normalement. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -38,7 +59,9 @@
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
-            android:windowSoftInputMode="adjustResize">
+            android:windowSoftInputMode="adjustResize"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true">
             <!-- Specifies an Android theme to apply to this Activity as soon as
                  the Android process has started. This theme is visible to the user
                  while the Flutter UI initializes. After that, this theme continues

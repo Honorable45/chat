@@ -33,4 +33,10 @@ export class SendMediaMessageDto {
   @IsOptional()
   @IsString()
   meta?: string;
+
+  @ApiPropertyOptional({ description: 'Id idempotent généré côté client (UUID)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  clientId?: string;
 }

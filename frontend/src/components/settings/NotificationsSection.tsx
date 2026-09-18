@@ -149,6 +149,9 @@ export function NotificationsSection() {
   const profile = user?.profile;
 
   const [notificationsEnabled, setNotificationsEnabled] = useState(profile?.notificationsEnabled ?? true);
+  const [hideNotificationContent, setHideNotificationContent] = useState(
+    profile?.hideNotificationContent ?? false,
+  );
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -160,7 +163,7 @@ export function NotificationsSection() {
     setError(null);
     setSaved(false);
     try {
-      await api.users.updateProfile({ notificationsEnabled });
+      await api.users.updateProfile({ notificationsEnabled, hideNotificationContent });
       await refreshMe();
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
@@ -175,6 +178,16 @@ export function NotificationsSection() {
     <div className="flex flex-col gap-3">
       <Row label="Notifications" description="Recevoir des notifications pour les nouveaux messages, vocaux et appels.">
         <Toggle checked={notificationsEnabled} onChange={() => setNotificationsEnabled((v) => !v)} />
+      </Row>
+
+      <Row
+        label="Masquer le contenu"
+        description={'Affiche "Glotta — Nouveau message" au lieu de l’aperçu du message (section 9).'}
+      >
+        <Toggle
+          checked={hideNotificationContent}
+          onChange={() => setHideNotificationContent((v) => !v)}
+        />
       </Row>
 
       {error && <p className="text-sm text-danger">{error}</p>}

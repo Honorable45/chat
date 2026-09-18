@@ -209,6 +209,22 @@ export class ContactsService {
     return row?.status === 'ACCEPTED';
   }
 
+  /**
+   * Synchronisation des contacts téléphoniques (section 2) : retrouve les
+   * comptes Glotta correspondant à des hashs de numéros calculés côté client
+   * (jamais de numéro en clair transmis dans un sens ou dans l'autre — voir
+   * User.phoneHash et phone-hash.util.ts). Même forme de retour que search()
+   * : uniquement des champs publics, jamais le téléphone lui-même.
+   */
+  async matchPhones(userId: string, phoneHashes: string[]): Promise<PublicUserDto[]> {
+    if (phoneHashes.length === 0) return [];
+    const users = await this.prisma.user.findMany({
+      where: { phoneHash: { in: phoneHashes }, isActive: true, id: { not: userId } },
+      select: { id: true },
+    });
+    return Promise.all(users.map((u) => this.users.getPublicProfile(u.id)));
+  }
+
   async listContacts(userId: string): Promise<PublicUserDto[]> {
     const rows = await this.prisma.contactRequest.findMany({
       where: {

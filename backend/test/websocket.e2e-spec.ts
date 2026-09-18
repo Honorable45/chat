@@ -85,6 +85,44 @@ describe('WebSocket (e2e)', () => {
     socket.close();
   });
 
+  it('refuse toute NOUVELLE connexion avec un access token dont la session a été révoquée (logout)', async () => {
+    const revoked = await registerTestUser(app, { username: 'ws_revoked' });
+
+    // Confirme d'abord que le token fonctionne bien avant révocation.
+    const initial = await connect(revoked.accessToken);
+    initial.close();
+
+    await request(app.getHttpServer())
+      .post('/api/auth/logout')
+      .set('Authorization', `Bearer ${revoked.accessToken}`)
+      .expect(204);
+
+    await expect(
+      new Promise<void>((resolve, reject) => {
+        const socket = io(baseUrl, {
+          auth: { token: revoked.accessToken },
+          reconnection: false,
+          forceNew: true,
+          transports: ['websocket'],
+        });
+        const timeout = setTimeout(() => reject(new Error('ni connect ni disconnect reçu')), 5000);
+        socket.on('connect', () => {
+          clearTimeout(timeout);
+          socket.close();
+          reject(new Error('connexion acceptée alors que la session est révoquée'));
+        });
+        socket.on('connect_error', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        socket.on('disconnect', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+      }),
+    ).resolves.toBeUndefined();
+  });
+
   it('relaie message:typing au membre (B) mais jamais à un non-membre (C)', async () => {
     const socketA = await connect(a.accessToken);
     const socketB = await connect(b.accessToken);
@@ -197,7 +235,9 @@ describe('WebSocket (e2e)', () => {
     socketB.emit('conversation:closed', {});
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    const notificationReceived = new Promise((resolve) => socketB.once('notification:new', resolve));
+    const notificationReceived = new Promise((resolve) =>
+      socketB.once('notification:new', resolve),
+    );
 
     const sent = await request(app.getHttpServer())
       .post('/api/messages')

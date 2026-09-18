@@ -101,9 +101,10 @@ Reprenez `backend/.env.example` et changez impérativement :
 
 | Variable | Valeur en production |
 | --- | --- |
+| `NODE_ENV` | `production` — **vérifiez explicitement** que la plateforme la définit (Render le fait par défaut pour un Web Service Node, mais ne vous y fiez pas sans vérifier) : sans elle, Swagger reste exposé publiquement et le serveur ne refuse plus de démarrer avec l'OTP d'inscription désactivé (voir `src/config/startup-validation.ts` et `main.ts`) |
 | `DATABASE_URL` | Fournie par le Postgres managé |
 | `REDIS_URL` | Fournie par le Redis managé |
-| `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | Deux secrets forts générés (`openssl rand -hex 32`) — **jamais** les valeurs `change-me-*` de l'exemple |
+| `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | Deux secrets forts générés (`openssl rand -hex 32`, au moins 32 caractères) — **jamais** les valeurs `change-me-*`/celles de l'exemple : le serveur refuse maintenant de démarrer si l'un des trois secrets JWT ci-dessous est absent, trop court, une valeur d'exemple connue, ou identique à un autre (voir `src/config/startup-validation.ts`) |
 | `CALL_ACTION_JWT_SECRET` | Un troisième secret fort (`openssl rand -hex 32`), **distinct** des deux ci-dessus — jeton du bouton "Refuser" d'une notification push d'appel entrant (voir `CallsService.quickReject`) |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | Générées une fois avec `npx web-push generate-vapid-keys` (`VAPID_SUBJECT` = `mailto:<votre email>`) — **sans ces 3 variables, aucune notification push (message, appel manqué, appel entrant...) n'est envoyée**, même si tout le reste fonctionne : `PushProvider` retombe silencieusement sur "rien n'est envoyé" plutôt que d'échouer, donc l'oubli ne se voit dans aucun log d'erreur |
 | `CORS_ORIGIN` | Domaines Vercel de `frontend/` **et** `admin/`, séparés par une virgule (ex. `https://glotta.vercel.app,https://admin-glotta.vercel.app`) — sert aussi au nouveau namespace WebSocket `/device-link` (liaison Web par QR), rien de plus à configurer pour lui |
@@ -126,7 +127,15 @@ consorts), **tant que `SMS_PROVIDER="none"`** (valeur par défaut), le code à
 comportement volontaire pour le développement — voir le commentaire dans le
 fichier) — **jamais envoyé par SMS**. En production, ça revient à rendre
 l'inscription/la connexion mobile inutilisables pour un vrai utilisateur (il
-n'a aucun moyen de lire les logs Render). Avant tout lancement réel :
+n'a aucun moyen de lire les logs Render).
+
+Avec `NODE_ENV=production`, le serveur refuse maintenant de démarrer tant
+que `REGISTRATION_OTP_ENABLED` ne vaut pas `"true"` **et** que
+`SMS_PROVIDER` ne pointe pas vers un vrai fournisseur configuré (voir
+`src/config/startup-validation.ts`) — impossible d'oublier cette étape et
+de déployer en laissant un numéro de téléphone se faire marquer "vérifié"
+sans jamais avoir prouvé la possession du téléphone. Avant tout lancement
+réel :
 1. Créez un compte sur https://zavu.dev et ouvrez le dashboard Zavu.
 2. Générez une clé API depuis le dashboard (dashboard.zavu.dev).
 3. Renseignez `ZAVUDEV_API_KEY` et `SMS_PROVIDER="zavu"`. Ne renseignez
@@ -206,7 +215,9 @@ modifie que `isActive`, jamais `role`, par design).
 
 ## Checklist avant mise en production
 
-- [ ] `JWT_ACCESS_SECRET`/`JWT_REFRESH_SECRET`/`CALL_ACTION_JWT_SECRET` régénérés (jamais les valeurs d'exemple, jamais la même valeur pour les trois)
+- [ ] `NODE_ENV=production` défini et vérifié (active Swagger désactivé, secrets/OTP validés au démarrage — voir tableau des variables ci-dessus)
+- [ ] `JWT_ACCESS_SECRET`/`JWT_REFRESH_SECRET`/`CALL_ACTION_JWT_SECRET` régénérés (jamais les valeurs d'exemple, jamais la même valeur pour les trois, au moins 32 caractères — le serveur refuse sinon de démarrer)
+- [ ] `REGISTRATION_OTP_ENABLED="true"` et `SMS_PROVIDER="zavu"` + `ZAVUDEV_API_KEY` renseignés (le serveur refuse sinon de démarrer en production, voir ⚠️ ci-dessus)
 - [ ] `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/`VAPID_SUBJECT` renseignés (sans quoi aucune notification push n'est envoyée, y compris les appels entrants hors de l'app)
 - [ ] `CLOUDINARY_CLOUD_NAME`/`CLOUDINARY_API_KEY`/`CLOUDINARY_API_SECRET` renseignés (images/vidéos/avatars/vocaux)
 - [ ] Volume persistant monté pour `STORAGE_LOCAL_PATH` (messages vocaux uniquement), ou driver S3 implémenté

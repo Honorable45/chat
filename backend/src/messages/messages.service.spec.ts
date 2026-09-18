@@ -21,6 +21,9 @@ function buildMessage(overrides: Partial<Message> = {}): Message {
     replyToId: null,
     editedAt: null,
     deletedAt: null,
+    clientId: null,
+    pinnedAt: null,
+    pinnedById: null,
     sentAt: new Date(),
     deliveredAt: null,
     createdAt: new Date(),
@@ -66,6 +69,9 @@ function buildMembership(overrides: Partial<ConversationMember> = {}): Conversat
     lastReadAt: null,
     isArchived: false,
     isMuted: false,
+    isPinned: false,
+    pinnedAt: null,
+    hiddenAt: null,
     leftAt: null,
     ...overrides,
   };
@@ -84,6 +90,7 @@ describe('MessagesService', () => {
     conversation: { update: jest.Mock; findUnique: jest.Mock };
     conversationMember: { findUnique: jest.Mock; findMany: jest.Mock; update: jest.Mock };
     messageRead: { createMany: jest.Mock };
+    messageDeletion: { upsert: jest.Mock };
     attachment: { findUnique: jest.Mock; findMany: jest.Mock };
     reaction: { upsert: jest.Mock; deleteMany: jest.Mock };
     messageMention: { createMany: jest.Mock };
@@ -126,6 +133,7 @@ describe('MessagesService', () => {
       },
       conversationMember: { findUnique: jest.fn(), findMany: jest.fn(), update: jest.fn() },
       messageRead: { createMany: jest.fn() },
+      messageDeletion: { upsert: jest.fn() },
       attachment: { findUnique: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
       reaction: { upsert: jest.fn(), deleteMany: jest.fn() },
       messageMention: { createMany: jest.fn() },
@@ -203,6 +211,23 @@ describe('MessagesService', () => {
       const result = await service.send('user-1', { conversationId: 'conv-1', text: 'salut' });
 
       expect(result.deliveredAt).toBeNull();
+    });
+
+    it('renvoie le message déjà créé plutôt qu’un doublon quand clientId correspond déjà à un envoi du même expéditeur', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.message.findUnique.mockResolvedValue({
+        ...buildMessage({ id: 'msg-existant', clientId: 'client-abc', senderId: 'user-1' }),
+        reads: [],
+      });
+
+      const result = await service.send('user-1', {
+        conversationId: 'conv-1',
+        text: 'salut',
+        clientId: 'client-abc',
+      });
+
+      expect(result.id).toBe('msg-existant');
+      expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
     it('crée le message, fait remonter la conversation et notifie les autres membres', async () => {
@@ -1215,6 +1240,92 @@ describe('MessagesService', () => {
     });
   });
 
+  describe('deleteForMe', () => {
+    it("n'importe quel membre peut supprimer pour lui-même, pas seulement l'auteur", async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage({ senderId: 'user-2' }));
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership({ userId: 'user-1' }));
+
+      await service.deleteForMe('user-1', 'msg-1');
+
+      expect(prisma.messageDeletion.upsert).toHaveBeenCalledWith({
+        where: { messageId_userId: { messageId: 'msg-1', userId: 'user-1' } },
+        create: { messageId: 'msg-1', userId: 'user-1' },
+        update: {},
+      });
+    });
+
+    it("refuse si l'utilisateur n'est pas membre de la conversation", async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage());
+      prisma.conversationMember.findUnique.mockResolvedValue(null);
+
+      await expect(service.deleteForMe('user-1', 'msg-1')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prisma.messageDeletion.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('pin/unpin', () => {
+    it('épingle un message et diffuse message:updated aux autres membres', async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage());
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([{ userId: 'user-2' }]);
+      prisma.message.update.mockResolvedValue({
+        ...buildMessage({ pinnedAt: new Date(), pinnedById: 'user-1' }),
+        reads: [],
+      });
+
+      const result = await service.pin('user-1', 'msg-1');
+
+      expect(result.pinnedAt).not.toBeNull();
+      /* eslint-disable @typescript-eslint/no-unsafe-assignment -- expect.any(Date) est typé
+         `any` par @types/jest, sans danger dans une simple assertion. */
+      expect(prisma.message.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { pinnedAt: expect.any(Date), pinnedById: 'user-1' },
+        }),
+      );
+      /* eslint-enable @typescript-eslint/no-unsafe-assignment */
+      expect(events.emitToUsers).toHaveBeenCalledWith(
+        ['user-2'],
+        'message:updated',
+        expect.anything(),
+      );
+    });
+
+    it('désépingle en effaçant pinnedAt/pinnedById', async () => {
+      prisma.message.findUnique.mockResolvedValue(buildMessage({ pinnedAt: new Date() }));
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.conversationMember.findMany.mockResolvedValue([]);
+      prisma.message.update.mockResolvedValue({ ...buildMessage(), reads: [] });
+
+      await service.unpin('user-1', 'msg-1');
+
+      expect(prisma.message.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { pinnedAt: null, pinnedById: null } }),
+      );
+    });
+  });
+
+  describe('listPinned', () => {
+    it('renvoie uniquement les messages épinglés, triés du plus récent', async () => {
+      prisma.conversationMember.findUnique.mockResolvedValue(buildMembership());
+      prisma.message.findMany.mockResolvedValue([
+        { ...buildMessage({ id: 'msg-2', pinnedAt: new Date() }), reads: [] },
+      ]);
+
+      const result = await service.listPinned('user-1', 'conv-1');
+
+      expect(prisma.message.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { conversationId: 'conv-1', pinnedAt: { not: null } },
+          orderBy: { pinnedAt: 'desc' },
+        }),
+      );
+      expect(result).toHaveLength(1);
+    });
+  });
+
   describe('list', () => {
     it("refuse de lister les messages d'une conversation dont on n'est pas membre", async () => {
       prisma.conversationMember.findUnique.mockResolvedValue(null);
@@ -1265,6 +1376,7 @@ describe('MessagesService', () => {
           where: {
             conversationId: 'conv-1',
             deletedAt: null,
+            deletions: { none: { userId: 'user-1' } },
             text: { contains: 'salut', mode: 'insensitive' },
           },
           orderBy: { createdAt: 'desc' },

@@ -20,6 +20,7 @@ import { VerifyRegisterOtpDto } from './dto/verify-register-otp.dto';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
 import { MailService } from './mail/mail.service';
 import { OtpService } from './otp/otp.service';
+import { hashPhone } from './phone-hash.util';
 
 const ACCESS_TOKEN_TTL_FALLBACK = '15m';
 const REFRESH_TOKEN_TTL_FALLBACK = '30d';
@@ -35,8 +36,14 @@ const DEFAULT_LANGUAGE_CODE = 'fr';
 // accepté après une rotation (voir refresh()) — absorbe la course bénigne
 // entre deux onglets/appareils qui rafraîchissent quasi simultanément avec
 // le même token de départ, sans affaiblir la détection d'un vrai rejeu
-// (token plus ancien, ou hors de cette fenêtre).
-const REFRESH_GRACE_PERIOD_MS = 60_000;
+// (token plus ancien, ou hors de cette fenêtre). Réduite de 60s à 5s (audit
+// de sécurité) : la course bénigne reste absorbée (deux requêtes à
+// quelques centaines de ms d'écart), mais la fenêtre de rejeu exploitable
+// est désormais bien plus étroite. La rotation elle-même est rendue
+// atomique (voir rotateRefreshTokenAtomic) — cette fenêtre ne protège plus
+// que le cas légitime de deux rotations concurrentes, jamais une
+// multiplication d'un même token volé.
+const REFRESH_GRACE_PERIOD_MS = 5_000;
 
 export interface AuthTokens {
   accessToken: string;
@@ -172,30 +179,49 @@ export class AuthService {
   async requestRegisterOtp(phone: string, ipAddress?: string): Promise<void> {
     const existing = await this.prisma.user.findUnique({ where: { phone } });
     if (existing) throw new ConflictException('Ce numéro est déjà utilisé.');
+    // Bascule temporaire (voir isRegistrationOtpEnabled) : aucun SMS envoyé,
+    // aucune ligne OtpRequest créée tant qu'elle est désactivée — jamais
+    // supprimé, juste sauté.
+    if (!this.isRegistrationOtpEnabled()) return;
     await this.otp.request(phone, OtpPurpose.REGISTER, ipAddress);
   }
 
+  /**
+   * Bascule temporaire (demande explicite, section registration) :
+   * "false"/absent — jamais de SMS envoyé ni de code demandé à
+   * l'inscription, le numéro est considéré vérifié tel quel pour laisser
+   * l'inscription se poursuivre. "true" réactive la vérification réelle
+   * exactement comme avant, sans aucun autre changement de code (le reste de
+   * OtpService/SmsService/ces mêmes endpoints reste intact et inchangé).
+   * Ne concerne QUE l'inscription — verifyLoginOtp/2FA gardent leur OTP
+   * normal quoi qu'il arrive ici.
+   */
+  private isRegistrationOtpEnabled(): boolean {
+    return process.env.REGISTRATION_OTP_ENABLED === 'true';
+  }
+
   async verifyRegisterOtp(dto: VerifyRegisterOtpDto, context: DeviceContext) {
-    // Le parcours d'inscription mobile doit créer le compte directement sans
-    // bloquer sur une vérification préalable du numéro de téléphone. On garde
-    // la demande OTP pour le flux de démo/UX, mais la validation du code n'est
-    // pas un prérequis de création du compte.
-    let otpRequestId: string | null = null;
-    try {
-      const otpRequest = await this.otp.verify(dto.phone, OtpPurpose.REGISTER, dto.code);
-      otpRequestId = otpRequest.id;
-    } catch {
-      // Bypass volontaire de la vérification du numéro au moment de la création
-      // du compte : on crée quand même le compte, puis on consomme la demande
-      // OTP si elle existe encore.
+    const registrationOtpEnabled = this.isRegistrationOtpEnabled();
+    if (registrationOtpEnabled && !dto.code) {
+      throw new UnauthorizedException('Code invalide ou expiré.');
     }
+
+    // Le code doit être réellement vérifié quand la bascule est active
+    // (section 2 : "protection contre le brute-force") — laisse
+    // OtpService.verify lever UnauthorizedException pour un code invalide/
+    // expiré/déjà consommé, exactement comme verifyLoginOtp. Désactivée : le
+    // numéro est temporairement considéré vérifié sans jamais appeler
+    // OtpService (voir isRegistrationOtpEnabled).
+    const otpRequest = registrationOtpEnabled
+      ? await this.otp.verify(dto.phone, OtpPurpose.REGISTER, dto.code!)
+      : null;
 
     // Revérifie l'unicité : une course est possible entre la demande d'OTP
     // et sa vérification (ex. deux appareils inscrivant le même numéro en
     // parallèle) — jamais fait confiance au seul contrôle initial.
     const existing = await this.prisma.user.findUnique({ where: { phone: dto.phone } });
     if (existing) {
-      if (otpRequestId) await this.otp.consume(otpRequestId);
+      if (otpRequest) await this.otp.consume(otpRequest.id);
       throw new ConflictException('Ce numéro est déjà utilisé.');
     }
 
@@ -214,7 +240,12 @@ export class AuthService {
       data: {
         username,
         phone: dto.phone,
-        phoneVerifiedAt: null,
+        phoneHash: hashPhone(dto.phone),
+        // Réellement vérifié via l'OTP quand la bascule est active (voir
+        // this.otp.verify ci-dessus) ; considéré vérifié tel quel pendant la
+        // désactivation temporaire (demande explicite) — jamais `null` pour
+        // un compte créé par ce parcours dans les deux cas.
+        phoneVerifiedAt: new Date(),
         passwordHash: null,
         firstName,
         lastName,
@@ -223,7 +254,7 @@ export class AuthService {
         profile: { create: {} },
       },
     });
-    if (otpRequestId) await this.otp.consume(otpRequestId);
+    if (otpRequest) await this.otp.consume(otpRequest.id);
 
     const tokens = await this.createSession(
       user,
@@ -259,10 +290,17 @@ export class AuthService {
     const existing = await this.prisma.user.findUnique({ where: { phone } });
     if (existing) {
       if (!existing.isActive) throw new UnauthorizedException('Compte indisponible.');
+      // Connexion : jamais affectée par la bascule d'inscription (voir
+      // isRegistrationOtpEnabled) — l'OTP de connexion reste toujours requis.
       await this.otp.request(phone, OtpPurpose.LOGIN, ipAddress);
       return { purpose: OtpPurpose.LOGIN };
     }
-    await this.otp.request(phone, OtpPurpose.REGISTER, ipAddress);
+    // Inscription : voir isRegistrationOtpEnabled — aucun SMS envoyé tant
+    // qu'elle est désactivée, `purpose` reste renvoyé normalement pour que
+    // le client enchaîne sur le reste du parcours (profil...).
+    if (this.isRegistrationOtpEnabled()) {
+      await this.otp.request(phone, OtpPurpose.REGISTER, ipAddress);
+    }
     return { purpose: OtpPurpose.REGISTER };
   }
 
@@ -344,6 +382,38 @@ export class AuthService {
     }
   }
 
+  /**
+   * Section 4 du cahier des charges : "un changement de numéro doit
+   * obligatoirement passer par une nouvelle vérification OTP" — jamais via
+   * UsersService.updateMe (qui n'accepte plus `phone`, voir son rapport).
+   */
+  async requestPhoneChange(userId: string, newPhone: string, ipAddress?: string): Promise<void> {
+    const existing = await this.prisma.user.findUnique({ where: { phone: newPhone } });
+    if (existing && existing.id !== userId) {
+      throw new ConflictException('Ce numéro est déjà utilisé.');
+    }
+    await this.otp.request(newPhone, OtpPurpose.CHANGE_PHONE, ipAddress);
+  }
+
+  async verifyPhoneChange(userId: string, newPhone: string, code: string): Promise<SafeUser> {
+    const otpRequest = await this.otp.verify(newPhone, OtpPurpose.CHANGE_PHONE, code);
+
+    // Revérifie l'unicité : même raison que verifyRegisterOtp (course
+    // possible entre la demande d'OTP et sa vérification).
+    const existing = await this.prisma.user.findUnique({ where: { phone: newPhone } });
+    if (existing && existing.id !== userId) {
+      await this.otp.consume(otpRequest.id);
+      throw new ConflictException('Ce numéro est déjà utilisé.');
+    }
+
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data: { phone: newPhone, phoneHash: hashPhone(newPhone), phoneVerifiedAt: new Date() },
+    });
+    await this.otp.consume(otpRequest.id);
+    return toSafeUser(user);
+  }
+
   async refresh(refreshToken: string) {
     const payload = await this.verifyToken(refreshToken, this.getRefreshSecret());
 
@@ -387,7 +457,11 @@ export class AuthService {
 
     // Le hash tout juste supplanté devient le nouveau "précédent" gracié —
     // que ce refresh vienne du chemin normal ou du rattrapage ci-dessus.
-    const tokens = await this.signTokensForSession(user.id, session.id, session.refreshTokenHash);
+    const tokens = await this.rotateRefreshTokenAtomic(
+      user.id,
+      session.id,
+      session.refreshTokenHash,
+    );
     return { user: toSafeUser(user), ...tokens };
   }
 
@@ -567,6 +641,61 @@ export class AuthService {
         expiresAt: this.computeRefreshExpiry(),
       },
     });
+
+    return { accessToken, refreshToken };
+  }
+
+  /**
+   * Même rotation que signTokensForSession, mais rendue atomique pour
+   * POST /auth/refresh uniquement (audit de sécurité) : sans ceci, deux
+   * appels concurrents présentant le MÊME refresh token valide passaient
+   * tous les deux la comparaison bcrypt (lue avant qu'aucune écriture
+   * n'atterrisse) et recevaient chacun une paire de tokens valide — un seul
+   * token volé pouvait ainsi être multiplié en plusieurs paires valides au
+   * lieu d'une rotation à usage unique. `expectedCurrentHash` est le hash lu
+   * au tout début de refresh() (avant la comparaison bcrypt) : l'update
+   * n'a lieu QUE si ce hash est toujours celui en base au moment de
+   * l'écriture, verrou optimiste Prisma (`updateMany` + vérification de
+   * `count`, pas d'`update` inconditionnel). `createSession()` continue
+   * d'utiliser signTokensForSession() directement : aucune course possible
+   * sur une ligne qui vient d'être créée.
+   */
+  private async rotateRefreshTokenAtomic(
+    userId: string,
+    sessionId: string,
+    expectedCurrentHash: string,
+  ): Promise<AuthTokens> {
+    const payload: JwtPayload = { sub: userId, sessionId };
+
+    const [accessToken, refreshToken] = await Promise.all([
+      this.jwt.signAsync(payload, {
+        secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
+        expiresIn: Math.floor(this.parseDurationMs(this.getAccessExpiresIn()) / 1000),
+      }),
+      this.jwt.signAsync(payload, {
+        secret: this.getRefreshSecret(),
+        expiresIn: Math.floor(this.parseDurationMs(this.getRefreshExpiresIn()) / 1000),
+      }),
+    ]);
+
+    const refreshTokenHash = await bcrypt.hash(refreshToken, PASSWORD_SALT_ROUNDS);
+    const result = await this.prisma.userSession.updateMany({
+      where: { id: sessionId, refreshTokenHash: expectedCurrentHash },
+      data: {
+        refreshTokenHash,
+        previousRefreshTokenHash: expectedCurrentHash,
+        lastUsedAt: new Date(),
+        expiresAt: this.computeRefreshExpiry(),
+      },
+    });
+
+    if (result.count !== 1) {
+      // Un autre appel concurrent a déjà gagné la course sur ce même hash
+      // de départ : ce token vient d'être consommé par l'autre appel. Le
+      // gagnant a une session parfaitement valide — ne JAMAIS la révoquer
+      // ici, seulement rejeter cet appel-ci.
+      throw new UnauthorizedException('Session invalide ou expirée.');
+    }
 
     return { accessToken, refreshToken };
   }

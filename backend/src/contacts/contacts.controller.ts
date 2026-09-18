@@ -6,6 +6,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AuthenticatedUser } from '../auth/interfaces/jwt-payload.interface';
 import { ContactsService } from './contacts.service';
 import { BlockContactDto } from './dto/block-contact.dto';
+import { MatchPhonesDto } from './dto/match-phones.dto';
 import { SendContactRequestDto } from './dto/send-contact-request.dto';
 import { ShareContactDto } from './dto/share-contact.dto';
 
@@ -73,6 +74,14 @@ export class ContactsController {
   @Post('share')
   share(@CurrentUser() user: AuthenticatedUser, @Body() dto: ShareContactDto) {
     return this.contacts.shareContact(user.userId, dto);
+  }
+
+  // Un seul appel par déclenchement de synchro (jamais par frappe) — la
+  // limite reste basse malgré ça, chaque appel scanne jusqu'à 2000 hashs.
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('match-phones')
+  matchPhones(@CurrentUser() user: AuthenticatedUser, @Body() dto: MatchPhonesDto) {
+    return this.contacts.matchPhones(user.userId, dto.phoneHashes);
   }
 
   /**
