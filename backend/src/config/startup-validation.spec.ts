@@ -101,6 +101,46 @@ describe('validateRegistrationOtpProductionGate', () => {
       }),
     ).not.toThrow();
   });
+
+  describe('ALLOW_UNVERIFIED_PHONE_REGISTRATION (dérogation explicite)', () => {
+    it('production sans OTP + ALLOW_UNVERIFIED_PHONE_REGISTRATION="true" → accepté, avec avertissement journalisé', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+      expect(() =>
+        validateRegistrationOtpProductionGate({
+          NODE_ENV: 'production',
+          ALLOW_UNVERIFIED_PHONE_REGISTRATION: 'true',
+        }),
+      ).not.toThrow();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('ALLOW_UNVERIFIED_PHONE_REGISTRATION'),
+      );
+
+      warnSpy.mockRestore();
+    });
+
+    it('la dérogation ne s\'applique jamais si REGISTRATION_OTP_ENABLED="true" mais mal configuré (jamais un blanc-seing)', () => {
+      // Le drapeau ne couvre que "OTP totalement désactivé" — pas "OTP
+      // activé mais SMS_PROVIDER cassé", qui reste une vraie erreur de
+      // configuration à corriger, jamais une décision produit assumée.
+      expect(() =>
+        validateRegistrationOtpProductionGate({
+          NODE_ENV: 'production',
+          REGISTRATION_OTP_ENABLED: 'true',
+          ALLOW_UNVERIFIED_PHONE_REGISTRATION: 'true',
+        }),
+      ).toThrow();
+    });
+
+    it('une valeur autre que "true" (ex. absente, "1", "yes") ne dispense pas de la garde', () => {
+      expect(() =>
+        validateRegistrationOtpProductionGate({
+          NODE_ENV: 'production',
+          ALLOW_UNVERIFIED_PHONE_REGISTRATION: 'yes',
+        }),
+      ).toThrow();
+    });
+  });
 });
 
 describe('validateStartupConfig', () => {

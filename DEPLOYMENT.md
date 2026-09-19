@@ -148,6 +148,16 @@ Le mot de passe classique (`/auth/login`, `/auth/register`) reste
 fonctionnel en parallèle (conservé pour l'accès admin/outillage) — seul le
 nouveau parcours téléphone dépend de Zavu.
 
+**Dérogation temporaire** (décision produit, 2026-09) : si Zavu n'est pas
+encore prêt mais qu'un déploiement est nécessaire quand même, définissez
+`ALLOW_UNVERIFIED_PHONE_REGISTRATION="true"` sur Render pour lever ce
+blocage — le serveur démarre alors, mais un numéro de téléphone peut être
+marqué "vérifié" sans SMS réel (un avertissement est journalisé à chaque
+démarrage pour le rappeler). Retirez cette variable dès que
+`REGISTRATION_OTP_ENABLED="true"` peut être activé avec un vrai
+`SMS_PROVIDER`, ou dès que l'inscription par téléphone est retirée du
+parcours mobile.
+
 ### Health check
 
 Configurez le health check de la plateforme sur `GET /api/health`.

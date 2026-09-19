@@ -23,6 +23,7 @@ export interface StartupValidationEnv {
   REGISTRATION_OTP_ENABLED?: string;
   SMS_PROVIDER?: string;
   ZAVUDEV_API_KEY?: string;
+  ALLOW_UNVERIFIED_PHONE_REGISTRATION?: string;
 }
 
 /**
@@ -63,19 +64,39 @@ export function validateSecrets(env: StartupValidationEnv): void {
 }
 
 /**
- * En production uniquement : refuse de démarrer si l'OTP d'inscription par
- * téléphone n'est pas activé avec un vrai fournisseur SMS configuré —
- * sans quoi un numéro pourrait être marqué vérifié sans jamais avoir prouvé
- * la possession du téléphone (voir AuthService.isRegistrationOtpEnabled,
- * dont le bypass reste volontairement disponible en dehors de la
- * production).
+ * En production : refuse par défaut de démarrer si l'OTP d'inscription par
+ * téléphone n'est pas activé avec un vrai fournisseur SMS configuré — sans
+ * quoi un numéro pourrait être marqué vérifié sans jamais avoir prouvé la
+ * possession du téléphone (voir AuthService.isRegistrationOtpEnabled, dont
+ * le bypass reste volontairement disponible en dehors de la production).
+ *
+ * `ALLOW_UNVERIFIED_PHONE_REGISTRATION=true` lève cette garde
+ * explicitement (décision produit, 2026-09) : le démarrage est alors
+ * autorisé mais journalise un avertissement à chaque fois, pour que ce
+ * choix reste visible tant qu'il n'est pas revu.
  */
 export function validateRegistrationOtpProductionGate(env: StartupValidationEnv): void {
   if (env.NODE_ENV !== 'production') return;
 
   if (env.REGISTRATION_OTP_ENABLED !== 'true') {
+    // Dérogation explicite et volontaire (jamais le comportement par
+    // défaut) : décision produit de faire tourner la production sans
+    // vérification OTP réelle pour le moment. Reste visible dans les logs à
+    // chaque démarrage tant que ce choix n'est pas revu — un numéro de
+    // téléphone peut être marqué "vérifié" sans jamais avoir reçu de SMS
+    // tant que cette variable est présente.
+    if (env.ALLOW_UNVERIFIED_PHONE_REGISTRATION === 'true') {
+      console.warn(
+        'ATTENTION : ALLOW_UNVERIFIED_PHONE_REGISTRATION=true — REGISTRATION_OTP_ENABLED est désactivé en ' +
+          "production, l'inscription par téléphone accepte des numéros jamais vérifiés par SMS. Retirez cette " +
+          'variable dès que REGISTRATION_OTP_ENABLED=true peut être activé avec un vrai SMS_PROVIDER.',
+      );
+      return;
+    }
     throw new Error(
-      'REGISTRATION_OTP_ENABLED doit valoir "true" en production : la vérification OTP du numéro de téléphone à l\'inscription ne peut pas rester désactivée en production.',
+      'REGISTRATION_OTP_ENABLED doit valoir "true" en production : la vérification OTP du numéro de téléphone à ' +
+        "l'inscription ne peut pas rester désactivée en production. Pour déroger temporairement à cette règle en " +
+        'connaissance de cause, définissez ALLOW_UNVERIFIED_PHONE_REGISTRATION=true.',
     );
   }
 
